@@ -126,7 +126,7 @@ def save_saved_locations(locations):
 PUNE_LAT = 18.5204
 PUNE_LON = 73.8567
 
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
 
 # -----------------------------
@@ -327,7 +327,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(
             collect_traffic_automatically,
             trigger="interval",
-            minutes=5,
+            minutes=15,
             id="traffic_collection",
             replace_existing=True,
             max_instances=1,
