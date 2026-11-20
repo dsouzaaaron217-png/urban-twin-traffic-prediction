@@ -31,3 +31,4 @@ matplotlib>=3.9.0,<=3.11.2
 # Testing & Quality Assurance
 pytest>=8.0.0,<=9.1.1
 httpx>=0.27.0,<=0.28.1
+pytest-cov>=6.0.0,<=7.1.0
