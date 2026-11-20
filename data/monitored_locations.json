@@ -34,5 +34,41 @@
         "city": "Pune",
         "latitude": 18.52482171408428,
         "longitude": 73.84277780462261
+    },
+    {
+        "name": "Hampankatta Circle",
+        "city": "Mangaluru",
+        "latitude": 12.86784,
+        "longitude": 74.842333
+    },
+    {
+        "name": "Kankanady Junction",
+        "city": "Mangaluru",
+        "latitude": 12.867503,
+        "longitude": 74.857916
+    },
+    {
+        "name": "Kuloor Bridge (NH66)",
+        "city": "Mangaluru",
+        "latitude": 12.926458,
+        "longitude": 74.827021
+    },
+    {
+        "name": "Bejai-Kapikad Road",
+        "city": "Mangaluru",
+        "latitude": 12.892703,
+        "longitude": 74.841573
+    },
+    {
+        "name": "Pumpwell Circle",
+        "city": "Mangaluru",
+        "latitude": 12.86894,
+        "longitude": 74.864104
+    },
+    {
+        "name": "Nanthoor Junction",
+        "city": "Mangaluru",
+        "latitude": 12.884045,
+        "longitude": 74.863838
     }
 ]
