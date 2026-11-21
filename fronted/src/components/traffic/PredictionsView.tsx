@@ -40,7 +40,6 @@ import type {
   PredictionLocation,
   PredictionDataStatusResponse,
   ModelStatusResponse,
-  Forecast,
 } from '@/types/traffic';
 
 function isKnownKarnatakaUnknownArea(location: PredictionLocation): boolean {
@@ -281,30 +280,74 @@ export function PredictionsView() {
 
   const activeOutlook = predictionData?.forecast;
   const liveConditions = predictionData?.live_traffic;
-  const demoForecasts = useMemo(() => {
-    const live = predictionData?.live_traffic;
-    if (predictionData?.forecast_available || !predictionData?.data_available || !live ||
-        live.congestion_percent == null || live.current_speed_kmh == null) return [];
 
-    const congestion = Number(live.congestion_percent);
-    const speed = Number(live.current_speed_kmh);
-    const observedAt = Date.parse(live.timestamp);
-    if (!Number.isFinite(congestion) || !Number.isFinite(speed) || !Number.isFinite(observedAt)) return [];
+  // When the validated model is not ready, show a clearly labeled trend estimate from recent observations.
+  const estimatedForecasts = useMemo(() => {
+    if (predictionData?.forecast_available || !predictionData?.data_available || !liveConditions) return [];
 
-    return [15, 30, 60].map(horizon => ({
-      horizon_minutes: horizon,
-      timestamp: new Date(observedAt + horizon * 60_000).toISOString(),
-      predicted_congestion_percent: congestion,
-      predicted_speed_kmh: speed,
-    }));
-  }, [predictionData]);
+    type Observation = { timestamp: string; time: number; congestion: number; speed: number; freeFlowSpeed: number };
+    const byTimestamp = new Map<number, Observation>();
+    for (const item of predictionData.recent_history ?? []) {
+      const time = Date.parse(item.timestamp);
+      const congestion = Number(item.congestion_percent);
+      const speed = Number(item.current_speed_kmh);
+      const freeFlowSpeed = Number(item.free_flow_speed_kmh);
+      if (Number.isFinite(time) && Number.isFinite(congestion) && Number.isFinite(speed) && Number.isFinite(freeFlowSpeed)) {
+        byTimestamp.set(time, { timestamp: item.timestamp, time, congestion, speed, freeFlowSpeed });
+      }
+    }
+    const liveTime = Date.parse(liveConditions.timestamp);
+    if (Number.isFinite(liveTime) && liveConditions.congestion_percent != null) {
+      byTimestamp.set(liveTime, {
+        timestamp: liveConditions.timestamp,
+        time: liveTime,
+        congestion: Number(liveConditions.congestion_percent),
+        speed: Number(liveConditions.current_speed_kmh),
+        freeFlowSpeed: Number(liveConditions.free_flow_speed_kmh),
+      });
+    }
 
-  // Prepare observed history plus either a validated forecast or a visibly separate demo baseline.
+    const observations = Array.from(byTimestamp.values()).sort((a, b) => a.time - b.time).slice(-6);
+    if (observations.length < 2) return [];
+    const last = observations.at(-1);
+    if (!last) return [];
+    const origin = last.time;
+    const slopePerMinute = (field: 'congestion' | 'speed') => {
+      const xs = observations.map(item => (item.time - origin) / 60_000);
+      const ys = observations.map(item => item[field]);
+      const meanX = xs.reduce((sum, value) => sum + value, 0) / xs.length;
+      const meanY = ys.reduce((sum, value) => sum + value, 0) / ys.length;
+      const denominator = xs.reduce((sum, value) => sum + (value - meanX) ** 2, 0);
+      return denominator === 0 ? 0 : xs.reduce((sum, value, index) => sum + (value - meanX) * ((ys[index] ?? meanY) - meanY), 0) / denominator;
+    };
+    const congestionSlope = slopePerMinute('congestion');
+    const speedSlope = slopePerMinute('speed');
+    const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+
+    return [15, 30, 60].map(horizon => {
+      const damping = 0.5;
+      const congestion = Number(clamp(last.congestion + congestionSlope * horizon * damping, 0, 100).toFixed(1));
+      const speed = Number(clamp(last.speed + speedSlope * horizon * damping, 0, last.freeFlowSpeed).toFixed(1));
+      const congestionDelta = Number((congestion - last.congestion).toFixed(1));
+      const speedDelta = Number((speed - last.speed).toFixed(1));
+      const direction = congestionDelta > 1 ? 'worsening' : congestionDelta < -1 ? 'improving' : 'stable';
+      return {
+        horizon_minutes: horizon,
+        timestamp: new Date(origin + horizon * 60_000).toISOString(),
+        predicted_congestion_percent: congestion,
+        predicted_speed_kmh: speed,
+        congestion_delta: congestionDelta,
+        speed_delta: speedDelta,
+        direction,
+      };
+    });
+  }, [predictionData, liveConditions]);
+
+  // Prepare observed history and either the selected forecast or an unvalidated trend estimate.
   const chartData = useMemo(() => {
     if (!predictionData) return [];
     const history = predictionData.recent_history || [];
     const forecast = predictionData.forecast;
-
     const points: Array<{
       timestamp: string;
       timeLabel: string;
@@ -312,17 +355,15 @@ export function PredictionsView() {
       predictedCongestion?: number | null;
       observedSpeed?: number | null;
       predictedSpeed?: number | null;
-      demoCongestion?: number | null;
-      demoSpeed?: number | null;
       isForecast?: boolean;
     }> = [];
 
-    history.forEach(h => {
+    history.forEach(item => {
       points.push({
-        timestamp: h.timestamp,
-        timeLabel: formatTime(h.timestamp),
-        observedCongestion: h.congestion_percent,
-        observedSpeed: h.current_speed_kmh,
+        timestamp: item.timestamp,
+        timeLabel: formatTime(item.timestamp),
+        observedCongestion: item.congestion_percent,
+        observedSpeed: item.current_speed_kmh,
       });
     });
 
@@ -331,11 +372,9 @@ export function PredictionsView() {
         timestamp: liveConditions.timestamp,
         timeLabel: formatTime(liveConditions.timestamp),
         observedCongestion: liveConditions.congestion_percent,
-        predictedCongestion: predictionData.forecast_available ? liveConditions.congestion_percent : null,
+        predictedCongestion: predictionData.forecast_available || estimatedForecasts.length > 0 ? liveConditions.congestion_percent : null,
         observedSpeed: liveConditions.current_speed_kmh,
-        predictedSpeed: predictionData.forecast_available ? liveConditions.current_speed_kmh : null,
-        demoCongestion: demoForecasts.length ? liveConditions.congestion_percent : null,
-        demoSpeed: demoForecasts.length ? liveConditions.current_speed_kmh : null,
+        predictedSpeed: predictionData.forecast_available || estimatedForecasts.length > 0 ? liveConditions.current_speed_kmh : null,
       });
     }
 
@@ -348,19 +387,21 @@ export function PredictionsView() {
         isForecast: true,
       });
     } else {
-      demoForecasts.forEach(demo => {
+      estimatedForecasts.forEach(estimate => {
         points.push({
-          timestamp: demo.timestamp,
-          timeLabel: `Demo +${demo.horizon_minutes}m (${formatTime(demo.timestamp)})`,
-          demoCongestion: demo.predicted_congestion_percent,
-          demoSpeed: demo.predicted_speed_kmh,
+          timestamp: estimate.timestamp,
+          timeLabel: `Estimate +${estimate.horizon_minutes}m (${formatTime(estimate.timestamp)})`,
+          predictedCongestion: estimate.predicted_congestion_percent,
+          predictedSpeed: estimate.predicted_speed_kmh,
           isForecast: true,
         });
       });
     }
 
-    return points;
-  }, [predictionData, liveConditions, demoForecasts]);
+    const uniquePoints = new Map<string, typeof points[number]>();
+    points.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)).forEach(point => uniquePoints.set(point.timestamp, point));
+    return Array.from(uniquePoints.values()).sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  }, [predictionData, liveConditions, estimatedForecasts]);
 
   const isInsufficientHistory = predictionData && !predictionData.forecast_available && predictionData.data_available;
   const isZeroHistory = predictionData && !predictionData.data_available;
@@ -708,13 +749,6 @@ export function PredictionsView() {
         </section>
       )}
 
-      {demoForecasts.length > 0 && (
-        <div role="status" className="rounded-xl border border-amber-400 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
-          <strong>Predicted · persistence method.</strong>{' '}
-          The amber dotted line and horizon cards carry the latest observed speed and congestion forward unchanged. This baseline has not yet been evaluated against future observations.
-        </div>
-      )}
-
       {/* 3. Case: Valid Forecast Available */}
       {predictionData?.forecast_available && activeOutlook && liveConditions && (
         <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-6 lg:p-7 shadow-sm">
@@ -852,6 +886,12 @@ export function PredictionsView() {
         </section>
       )}
 
+      {estimatedForecasts.length > 0 && !predictionData?.forecast_available && (
+        <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          <strong>Estimate · not validated.</strong> It extrapolates recent observations because this road has not met the verified-history requirement for an ML forecast.
+        </div>
+      )}
+
       {/* SECTION D: Observed vs. Forecasted Trajectory Chart */}
       <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-6 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
@@ -863,8 +903,8 @@ export function PredictionsView() {
             <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
               {predictionData?.forecast_available
                 ? 'Compare recent traffic observations with the forecast for your selected road.'
-                : demoForecasts.length > 0
-                  ? 'Amber dotted line: predicted with persistence, carrying the latest observed values forward.'
+                : estimatedForecasts.length > 0
+                  ? 'Amber dotted line: trend estimate from recent road observations; not a validated ML forecast.'
                   : predictionData
                     ? `No forecast is shown. ${predictionData.data_status?.readiness_note || predictionData.message || 'This location has not met the forecast data requirements.'}`
                     : 'Compare recent traffic observations with the forecast for your selected road.'}
@@ -961,29 +1001,19 @@ export function PredictionsView() {
                   activeDot={{ r: 6 }}
                 />
 
-                {/* Validated backend forecast */}
-                {predictionData?.forecast_available && (
+                {/* Validated forecast or a clearly labeled recent-observation estimate */}
+                {(predictionData?.forecast_available || estimatedForecasts.length > 0) && (
                   <Line
                     type="monotone"
                     dataKey={chartMetric === 'congestion' ? 'predictedCongestion' : 'predictedSpeed'}
-                    stroke="#9333ea"
+                    stroke={predictionData?.forecast_available ? '#9333ea' : '#d97706'}
                     strokeWidth={2.5}
                     strokeDasharray="5 5"
-                    name={`Forecast (+${selectedHorizon}m)`}
-                    dot={{ r: 5, fill: '#9333ea', stroke: '#fff', strokeWidth: 1.5 }}
+                    name={predictionData?.forecast_available ? `Forecast (+${selectedHorizon}m)` : 'Estimate · not validated'}
+                    dot={{ r: 5, fill: predictionData?.forecast_available ? '#9333ea' : '#d97706', stroke: '#fff', strokeWidth: 1.5 }}
                   />
                 )}
-                {!predictionData?.forecast_available && demoForecasts.length > 0 && (
-                  <Line
-                    type="monotone"
-                    dataKey={chartMetric === 'congestion' ? 'demoCongestion' : 'demoSpeed'}
-                    stroke="#d97706"
-                    strokeWidth={2.5}
-                    strokeDasharray="2 5"
-                    name="Predicted · persistence"
-                    dot={{ r: 4, fill: '#d97706', stroke: '#fff', strokeWidth: 1.5 }}
-                  />
-                )}
+
               </ComposedChart>
             </ResponsiveContainer>
           ) : (
@@ -1022,14 +1052,15 @@ export function PredictionsView() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[15, 30, 60].map(h => {
             const outlook = predictionData?.outlooks?.[`${h}m`];
-            const demoOutlook = demoForecasts.find(item => item.horizon_minutes === h);
+            const estimate = estimatedForecasts.find(item => item.horizon_minutes === h);
             const isSelected = selectedHorizon === h;
             const realAvailable = predictionData?.forecast_available && outlook?.predicted_congestion_percent != null;
-            const cong = realAvailable ? outlook?.predicted_congestion_percent : demoOutlook?.predicted_congestion_percent;
-            const spd = realAvailable ? outlook?.predicted_speed_kmh : demoOutlook?.predicted_speed_kmh;
-            const delta = realAvailable ? outlook?.congestion_delta : undefined;
-            const dir = realAvailable ? outlook?.direction : undefined;
-            const isAvail = (outlook?.model_status !== 'insufficient_data' && realAvailable) || Boolean(demoOutlook);
+            const estimateAvailable = !realAvailable && estimate != null;
+            const cong = realAvailable ? outlook?.predicted_congestion_percent : estimate?.predicted_congestion_percent;
+            const spd = realAvailable ? outlook?.predicted_speed_kmh : estimate?.predicted_speed_kmh;
+            const delta = realAvailable ? outlook?.congestion_delta : estimate?.congestion_delta;
+            const dir = realAvailable ? outlook?.direction : estimate?.direction;
+            const isAvail = (outlook?.model_status !== 'insufficient_data' && Boolean(realAvailable)) || estimateAvailable;
 
             return (
               <div
@@ -1053,7 +1084,7 @@ export function PredictionsView() {
                       ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
                   }`}>
-                    {realAvailable ? 'Forecast available' : demoOutlook ? 'Predicted · persistence' : 'Insufficient data'}
+                    {realAvailable ? 'Forecast available' : estimateAvailable ? 'Estimate · not validated' : 'Insufficient data'}
                   </span>
                 </div>
 
@@ -1086,11 +1117,7 @@ export function PredictionsView() {
                 </div>
 
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Target: {realAvailable && outlook?.timestamp
-                    ? formatTime(outlook.timestamp)
-                    : demoOutlook
-                      ? formatTime(demoOutlook.timestamp)
-                      : '--:--'}
+                  Target: {realAvailable && outlook?.timestamp ? formatTime(outlook.timestamp) : '--:--'}
                 </div>
               </div>
             );

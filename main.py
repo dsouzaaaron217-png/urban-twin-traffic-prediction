@@ -79,6 +79,7 @@ DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 CSV_FILE = DATA_DIR / "live_traffic.csv"
+SYNTHETIC_DEMO_CSV = DATA_DIR / "synthetic_demo_traffic.csv"
 LOCATIONS_FILE = DATA_DIR / "monitored_locations.json"
 SAVED_LOCATIONS_FILE = DATA_DIR / "saved_locations.json"
 
@@ -1660,6 +1661,75 @@ def invalidate_traffic_cache():
         _traffic_dataset_size = 0
 
 
+def _build_synthetic_demo_outlooks(history, current_speed, free_flow_speed, current_congestion):
+    """Build explicitly synthetic projections from prior same-road time patterns."""
+    if history is None or history.empty:
+        return {}
+
+    rows = history.copy()
+    rows["_timestamp_utc"] = pd.to_datetime(rows["timestamp"], errors="coerce", utc=True)
+    rows = rows.dropna(subset=["_timestamp_utc"]).sort_values("_timestamp_utc")
+    if rows.empty:
+        return {}
+
+    origin = rows["_timestamp_utc"].iloc[-1]
+    origin_local = origin.tz_convert("Asia/Kolkata")
+    local_times = rows["_timestamp_utc"].dt.tz_convert("Asia/Kolkata")
+    minute_of_day = local_times.dt.hour * 60 + local_times.dt.minute
+    is_weekend = local_times.dt.dayofweek >= 5
+    prior = rows[rows["_timestamp_utc"] < origin].copy()
+    prior_minutes = minute_of_day.loc[prior.index]
+    prior_weekend = is_weekend.loc[prior.index]
+    recent_values = rows["congestion_percent"].tail(5).astype(float).tolist()
+    slope_per_step = (recent_values[-1] - recent_values[0]) / (len(recent_values) - 1) if len(recent_values) > 1 else 0.0
+    outlooks = {}
+
+    for horizon in (15, 30, 60):
+        target = origin + pd.Timedelta(minutes=horizon)
+        target_local = target.tz_convert("Asia/Kolkata")
+        target_minute = target_local.hour * 60 + target_local.minute
+        time_delta = (prior_minutes - target_minute).abs()
+        time_delta = time_delta.clip(upper=1440 - time_delta)
+        target_is_weekend = target_local.dayofweek >= 5
+        analog_mask = (prior_weekend == target_is_weekend) & (time_delta <= 60)
+        analog_values = prior.loc[analog_mask, "congestion_percent"].astype(float)
+        if analog_values.empty:
+            nearest_indices = time_delta.sort_values().head(min(8, len(time_delta))).index
+            analog_values = prior.loc[nearest_indices, "congestion_percent"].astype(float)
+        seasonal_estimate = float(analog_values.mean()) if not analog_values.empty else float(current_congestion)
+        trend_estimate = float(current_congestion) + slope_per_step * (horizon / 15.0) * 0.35
+        projected_congestion = round(max(0.0, min(100.0, 0.75 * seasonal_estimate + 0.25 * trend_estimate)), 1)
+        projected_speed = round(max(1.0, min(float(free_flow_speed), float(free_flow_speed) * (1.0 - projected_congestion / 100.0))), 1)
+        congestion_delta = round(projected_congestion - float(current_congestion), 1)
+        speed_delta = round(projected_speed - float(current_speed), 1)
+        direction = "worsening" if congestion_delta > 1.0 else ("improving" if congestion_delta < -1.0 else "stable")
+        outlooks[f"{horizon}m"] = {
+            "timestamp": target_local.isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "horizon_minutes": horizon,
+            "predicted_congestion_percent": projected_congestion,
+            "predicted_speed_kmh": projected_speed,
+            "congestion_delta": congestion_delta,
+            "speed_delta": speed_delta,
+            "direction": direction,
+            "direction_label": {"worsening": "Simulated congestion may rise", "improving": "Simulated congestion may ease", "stable": "Simulated conditions may stay steady"}[direction],
+            "confidence": None,
+            "confidence_label": "Not measured",
+            "confidence_calibrated": False,
+            "data_tier": "synthetic_demo",
+            "model_status": "synthetic_demo_projection",
+            "model_name": "Synthetic time-pattern projection (demo only)",
+            "model_version": None,
+            "fallback_reason": "Simulated projection from synthetic time-of-day history; not validated against real traffic.",
+            "paired_samples": None,
+            "data_source": "synthetic_demo",
+            "latest_observation_at": origin_local.isoformat(),
+            "data_quality": {"source": "synthetic_demo", "quality": "synthetic_demo", "verified_history": False, "is_synthetic": True},
+            "explanation": "Demo-only projection based on prior synthetic readings for this road and similar local times.",
+        }
+    return outlooks
+
+
 @app.get("/api/traffic/predictions")
 def get_traffic_predictions(
     city: Optional[str] = Query(default=None),
@@ -1667,10 +1737,12 @@ def get_traffic_predictions(
     latitude: Optional[float] = Query(default=None, ge=-90, le=90),
     longitude: Optional[float] = Query(default=None, ge=-180, le=180),
     horizon_minutes: int = Query(default=15),
+    demo: bool = Query(default=False),
 ):
     """
     Returns forward traffic speed & congestion predictions across 15m, 30m, and 60m horizons.
     Separates live traffic observations from ML forecasts with honest handling of missing history.
+    When demo=True, uses the dedicated synthetic demo dataset with clear synthetic labelling.
     """
     supported_horizons = [15, 30, 60]
     if horizon_minutes not in supported_horizons:
@@ -1683,17 +1755,28 @@ def get_traffic_predictions(
     if not predictor.is_available:
         predictor.load()
 
-    # Load cleaned historical dataset using mtime cache
-    df = get_traffic_dataset()
-    feature_history = None
-    try:
-        from ml.data_prep import load_verified_phase1_dataset
-        verified_history = load_verified_phase1_dataset()
-        if not verified_history.empty:
-            df = verified_history
-            feature_history = verified_history
-    except Exception as exc:
-        print(f"Verified prediction history unavailable: {exc}")
+    # Load dataset: if demo requested, use dedicated synthetic demo dataset
+    is_synthetic_demo = bool(demo)
+    if is_synthetic_demo:
+        df = None
+        if SYNTHETIC_DEMO_CSV.exists():
+            try:
+                df = pd.read_csv(SYNTHETIC_DEMO_CSV)
+            except Exception as exc:
+                print(f"Failed to read synthetic demo dataset: {exc}")
+        feature_history = None
+    else:
+        # Load cleaned historical dataset using mtime cache
+        df = get_traffic_dataset()
+        feature_history = None
+        try:
+            from ml.data_prep import load_verified_phase1_dataset
+            verified_history = load_verified_phase1_dataset()
+            if not verified_history.empty:
+                df = verified_history
+                feature_history = verified_history
+        except Exception as exc:
+            print(f"Verified prediction history unavailable: {exc}")
 
     # Resolve location identity and historical subset
     loc_subset = None
@@ -1752,6 +1835,9 @@ def get_traffic_predictions(
     phase1_ready = bool(corridor_readiness and corridor_readiness["ready"])
     has_sufficient_history = observation_count >= 15 and phase1_ready
 
+    if is_synthetic_demo:
+        has_sufficient_history = False  # Demo data is simulated; never counts toward real readiness
+
     # Prioritize latest observation from the validated historical dataset
     current_speed = None
     free_flow_speed = None
@@ -1766,7 +1852,7 @@ def get_traffic_predictions(
         congestion = float(last_row["congestion_percent"])
         confidence = float(last_row.get("confidence", 0.85)) if pd.notna(last_row.get("confidence")) else 0.85
         live_timestamp = str(last_row["timestamp"])
-    elif resolved_lat is not None and resolved_lon is not None and TOMTOM_API_KEY:
+    elif not is_synthetic_demo and resolved_lat is not None and resolved_lon is not None and TOMTOM_API_KEY:
         # Fallback to direct TomTom flow query only when no dataset history exists for this point
         flow_data = _fetch_tomtom_flow(resolved_lat, resolved_lon, TOMTOM_API_KEY)
         if flow_data:
@@ -1799,12 +1885,13 @@ def get_traffic_predictions(
         unavailable_generated_at = datetime.now(timezone.utc).isoformat()
         return {
             "forecast_available": False,
-            "data_quality": {"status": "no_data", "source": None},
+            "is_demo": is_synthetic_demo,
+            "data_quality": {"status": "no_data", "source": "synthetic_demo" if is_synthetic_demo else None, "is_synthetic": is_synthetic_demo},
             "model_version": None,
             "generated_at": unavailable_generated_at,
             "data_available": False,
             "model_status": "no_data",
-            "message": "No live observation or recorded history found for this road segment.",
+            "message": "No synthetic demo observations are available for this road segment." if is_synthetic_demo else "No live observation or recorded history found for this road segment.",
             "location": location_info,
             "live_traffic": None,
             "forecast": None,
@@ -1847,6 +1934,41 @@ def get_traffic_predictions(
         "freshness": freshness_status,
     }
 
+    # Demo projections are isolated from the real-data readiness and model pipeline.
+    if is_synthetic_demo:
+        recent_pts = []
+        if loc_subset is not None and not loc_subset.empty:
+            for _, row in loc_subset.tail(10).iterrows():
+                recent_pts.append({
+                    "timestamp": str(row["timestamp"]),
+                    "congestion_percent": float(row["congestion_percent"]),
+                    "current_speed_kmh": float(row["current_speed_kmh"]),
+                    "free_flow_speed_kmh": float(row["free_flow_speed_kmh"]),
+                })
+        demo_outlooks = _build_synthetic_demo_outlooks(loc_subset, current_speed, free_flow_speed, congestion)
+        selected_demo_forecast = demo_outlooks.get(f"{horizon_minutes}m")
+        demo_ready_message = "Synthetic demo history is excluded from real-data readiness and model evaluation."
+        return {
+            "forecast_available": selected_demo_forecast is not None,
+            "is_demo": True,
+            "data_quality": {"source": "synthetic_demo", "status": "synthetic_demo", "verified_history": False, "is_synthetic": True},
+            "model_version": None,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "data_available": True,
+            "model_status": "synthetic_demo_projection",
+            "message": "Simulated demo projection; it is not a real traffic forecast.",
+            "explanation": "The displayed demo projection uses prior synthetic readings and local time patterns. It is not validated against real traffic and never enters real training or readiness calculations.",
+            "location": location_info,
+            "live_traffic": live_traffic_info,
+            "forecast": selected_demo_forecast,
+            "outlooks": demo_outlooks,
+            "recent_history": recent_pts,
+            "model_info": {"model_name": "Synthetic time-pattern projection (demo only)", "model_version": None, "horizon_minutes": horizon_minutes, "supported_horizons": [15, 30, 60], "fallback_reason": "Synthetic demo output; real model metrics do not apply."},
+            "data_status": {"total_observations": observation_count, "has_sufficient_history": False, "required_observations": 15, "history_days": 0, "coverage": 0, "readiness_message": demo_ready_message, "readiness_note": demo_ready_message, "is_stale": is_stale, "data_age_minutes": data_age_minutes, "freshness": freshness_status, "is_monitored": False},
+            "predictions": [selected_demo_forecast] if selected_demo_forecast else [],
+            "model_name": "Synthetic time-pattern projection (demo only)",
+        }
+
     # Check whether location is actively monitored by the background collector
     monitored_locs = load_monitored_locations()
     is_monitored = False
@@ -1874,21 +1996,27 @@ def get_traffic_predictions(
                     "free_flow_speed_kmh": float(r["free_flow_speed_kmh"]),
                 })
 
+        status_msg = "Simulated synthetic demo data for demonstration purposes." if is_synthetic_demo else f"Insufficient historical data for {resolved_area}. {readiness_note}"
+        explanation_msg = (
+            "Simulated demo readings provide an interactive preview of traffic variations across rush hour cycles. Synthetic records are never mixed into real model training or real-data evaluation."
+            if is_synthetic_demo
+            else "Forecasts require at least 14 days of corridor history with 80% polling coverage. Live traffic conditions are reported directly."
+        )
         return {
             "forecast_available": False,
+            "is_demo": is_synthetic_demo,
             "data_quality": {
-                "source": live_traffic_info.get("data_source"),
-                "status": "insufficient_history",
-                "verified_history": feature_history is not None,
+                "source": "synthetic_demo" if is_synthetic_demo else live_traffic_info.get("data_source"),
+                "status": "synthetic_demo" if is_synthetic_demo else "insufficient_history",
+                "verified_history": False if is_synthetic_demo else (feature_history is not None),
+                "is_synthetic": is_synthetic_demo,
             },
             "model_version": predictor.metadata.get("model_version") if predictor.metadata else None,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "data_available": True,
-            "model_status": "insufficient_history",
-            "message": f"Insufficient historical data for {resolved_area}. {readiness_note}",
-            "explanation": (
-                "Forecasts require at least 14 days of corridor history with 80% polling coverage. Live traffic conditions are reported directly."
-            ),
+            "model_status": "synthetic_demo" if is_synthetic_demo else "insufficient_history",
+            "message": status_msg,
+            "explanation": explanation_msg,
             "location": location_info,
             "live_traffic": live_traffic_info,
             "forecast": None,

@@ -4,7 +4,6 @@ export const strings = {
     dashboard: 'Dashboard',
     analytics: 'Traffic Analytics',
     predictions: 'Predictions',
-    hotspots: 'Congestion Hotspots',
     locations: 'My Locations',
     readiness: 'Forecast Readiness',
     alerts: 'Alerts',

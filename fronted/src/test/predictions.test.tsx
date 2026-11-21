@@ -262,12 +262,9 @@ describe('PredictionsView Component', () => {
     // 5. Multi-Horizon Outlook Cards
     expect(screen.getByText('Forecast by Time')).toBeInTheDocument();
 
-    // 6. Roads Comparison Table
-    expect(screen.getByText('Compare Other Roads')).toBeInTheDocument();
-    expect(screen.getByText('CSMT, Mumbai')).toBeInTheDocument();
-
-    // 7. Model Performance Section
-    expect(screen.getByText('Forecast Accuracy and Data Quality')).toBeInTheDocument();
+    // Removed empty/unverified comparison and model-accuracy sections stay out of the UI.
+    expect(screen.queryByText('Compare Other Roads')).not.toBeInTheDocument();
+    expect(screen.queryByText('Forecast Accuracy and Data Quality')).not.toBeInTheDocument();
 
     // 8. Data Pipeline Status
     expect(screen.getByText(/Cleaned Historical Dataset:/)).toBeInTheDocument();
@@ -328,9 +325,32 @@ describe('PredictionsView Component', () => {
       expect(screen.getByText(/Accumulating Historical Observations/)).toBeInTheDocument();
     });
     expect(screen.getByText(/7 observations · 50% coverage/)).toBeInTheDocument();
-    expect(screen.getByText(/Collecting data: 2 of 14 days/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Collecting data: 2 of 14 days/).length).toBeGreaterThan(0);
     // Live speed is reported truthfully
     expect(screen.getByText('22 km/h')).toBeInTheDocument();
+  });
+
+  it('shows a disclosed trend estimate when verified forecast history is insufficient', async () => {
+    const estimateInput: PredictionResponse = {
+      ...MOCK_PREDICTION,
+      forecast_available: false,
+      data_available: true,
+      forecast: null,
+      outlooks: {},
+      recent_history: [
+        { timestamp: '2026-10-18T10:30:00+05:30', congestion_percent: 30, current_speed_kmh: 32, free_flow_speed_kmh: 45 },
+        { timestamp: '2026-10-18T10:45:00+05:30', congestion_percent: 35, current_speed_kmh: 30, free_flow_speed_kmh: 45 },
+        { timestamp: '2026-10-18T11:00:00+05:30', congestion_percent: 38, current_speed_kmh: 28, free_flow_speed_kmh: 45 },
+      ],
+      data_status: { total_observations: 7, has_sufficient_history: false, history_days: 2, coverage: 0.5, readiness_note: 'Collecting data: 2 of 14 days' },
+    };
+    vi.spyOn(api, 'getPredictions').mockResolvedValue(estimateInput);
+
+    render(<PredictionsView />);
+
+    expect(await screen.findByText('Estimate · not validated.')).toBeInTheDocument();
+    expect(screen.getAllByText('Estimate · not validated').length).toBeGreaterThan(0);
+    expect(screen.getByText(/trend estimate from recent road observations/i)).toBeInTheDocument();
   });
 
   it('labels a validation fallback and shows a drift warning', async () => {

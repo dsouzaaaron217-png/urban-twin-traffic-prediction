@@ -272,6 +272,14 @@ export interface ModelStatusResponse {
 
 export interface PredictionResponse {
   forecast_available?: boolean;
+  is_demo?: boolean;
+  data_quality?: {
+    source?: string | null;
+    status?: string | null;
+    verified_history?: boolean;
+    is_synthetic?: boolean;
+  };
+  model_version?: string | null;
   data_available?: boolean;
   is_stale?: boolean;
   location?: {

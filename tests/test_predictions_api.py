@@ -181,3 +181,29 @@ def test_phase1_readiness_endpoint_returns_corridor_contract(client, monkeypatch
     response = client.get("/api/v1/data/readiness")
     assert response.status_code == 200
     assert response.json() == expected
+
+
+def test_synthetic_demo_predictions_endpoint(client):
+    """
+    Verifies that querying with ?demo=true returns clearly isolated synthetic demo data,
+    marking is_demo=True, data_quality.is_synthetic=True, and source='synthetic_demo'.
+    """
+    res = client.get("/api/traffic/predictions?city=Pune&area=Central%20Pune&horizon_minutes=15&demo=true")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["is_demo"] is True
+    assert data["data_quality"]["is_synthetic"] is True
+    assert data["data_quality"]["source"] == "synthetic_demo"
+    assert data["data_quality"]["status"] == "synthetic_demo"
+    assert data["data_quality"]["verified_history"] is False
+    assert data["forecast_available"] is True
+    assert data["model_status"] == "synthetic_demo_projection"
+    assert data["data_status"]["has_sufficient_history"] is False
+    assert data["forecast"]["model_status"] == "synthetic_demo_projection"
+    assert data["forecast"]["data_quality"]["is_synthetic"] is True
+    assert set(data["outlooks"]) == {"15m", "30m", "60m"}
+    assert "synthetic" in data["message"].lower() or "demo" in data["message"].lower()
+    assert len(data["recent_history"]) > 0
+    # Must preserve location
+    assert data["location"]["area"] == "Central Pune"
+    assert data["location"]["city"] == "Pune"
