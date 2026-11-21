@@ -118,13 +118,15 @@ function getFrcDescription(frc?: string): string {
 
 export function CongestionHotspots() {
   // Active monitored location (defaults to Central Pune)
-  const [currentLocation, setCurrentLocation] = useState<{
-    name: string;
-    city: string;
-    area: string;
-    latitude: number;
-    longitude: number;
-  }>(MONITORED_PRESETS[0]);
+  const [currentLocation, setCurrentLocation] = useState(() =>
+    MONITORED_PRESETS[0] ?? {
+      name: 'Central Pune',
+      city: 'Pune',
+      area: 'Central Pune',
+      latitude: 18.5204,
+      longitude: 73.8567,
+    }
+  );
 
   // Hotspots data state
   const [segments, setSegments] = useState<TrafficSegment[]>([]);
@@ -173,12 +175,16 @@ export function CongestionHotspots() {
 
   // Initial load or when monitored location changes
   useEffect(() => {
-    void fetchHotspotsData(currentLocation.latitude, currentLocation.longitude, currentLocation.city);
+    if (currentLocation) {
+      void fetchHotspotsData(currentLocation.latitude, currentLocation.longitude, currentLocation.city);
+    }
   }, [currentLocation, fetchHotspotsData]);
 
   // Handle manual refresh
   const handleRefresh = () => {
-    void fetchHotspotsData(currentLocation.latitude, currentLocation.longitude, currentLocation.city);
+    if (currentLocation) {
+      void fetchHotspotsData(currentLocation.latitude, currentLocation.longitude, currentLocation.city);
+    }
   };
 
   // Handle location search submit
@@ -293,7 +299,7 @@ export function CongestionHotspots() {
       list = list.filter(
         s =>
           (s.name && s.name.toLowerCase().includes(q)) ||
-          s.id.toLowerCase().includes(q) ||
+          (s.id ?? '').toLowerCase().includes(q) ||
           (s.frc && s.frc.toLowerCase().includes(q))
       );
     }
@@ -827,7 +833,10 @@ export function CongestionHotspots() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setSelectedSegmentId(rankedSegments[0].id)}
+                  onClick={() => {
+                    const firstSegmentId = rankedSegments[0]?.id;
+                    if (firstSegmentId) setSelectedSegmentId(firstSegmentId);
+                  }}
                   className="mt-3 text-xs"
                 >
                   <Flame size={13} className="mr-1 text-red-500" />
@@ -981,7 +990,9 @@ export function CongestionHotspots() {
                   return (
                     <tr
                       key={segment.id}
-                      onClick={() => setSelectedSegmentId(segment.id)}
+                      onClick={() => {
+                        if (segment.id) setSelectedSegmentId(segment.id);
+                      }}
                       className={`transition-colors cursor-pointer hover:bg-muted/40 ${
                         isSelected ? 'bg-primary/10 border-l-4 border-l-primary' : ''
                       }`}
@@ -1076,7 +1087,7 @@ export function CongestionHotspots() {
                           variant={isSelected ? 'default' : 'outline'}
                           onClick={e => {
                             e.stopPropagation();
-                            setSelectedSegmentId(segment.id);
+                            if (segment.id) setSelectedSegmentId(segment.id);
                           }}
                           className="text-xs h-7 px-2.5"
                         >

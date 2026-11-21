@@ -6,14 +6,14 @@ import type { TrafficReading, TrafficSegment } from '@/types/traffic';
 const Canvas = lazy(() => import('./HotspotMapCanvas'));
 
 export interface HotspotMapProps {
-  segments?: TrafficSegment[];
-  selectedSegmentId?: string | null;
-  onSelectSegment?: (segmentId: string) => void;
-  readings?: TrafficReading[];
-  center?: [number, number];
+  segments?: TrafficSegment[] | undefined;
+  selectedSegmentId?: string | null | undefined;
+  onSelectSegment?: ((segmentId: string) => void) | undefined;
+  readings?: TrafficReading[] | undefined;
+  center?: [number, number] | undefined;
   height?: number | string;
-  isExpanded?: boolean;
-  onToggleExpand?: () => void;
+  isExpanded?: boolean | undefined;
+  onToggleExpand?: (() => void) | undefined;
 }
 
 export function HotspotMap({

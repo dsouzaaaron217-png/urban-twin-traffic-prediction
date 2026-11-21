@@ -199,7 +199,8 @@ export function MyLocations() {
       const data = await getSavedLocations();
       setLocations(data);
       if (data.length > 0 && !selectedLocationId) {
-        setSelectedLocationId(data[0].id);
+        const firstLocationId = data[0]?.id;
+        if (firstLocationId) setSelectedLocationId(firstLocationId);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load saved locations.');
@@ -337,7 +338,7 @@ export function MyLocations() {
   // Select a place in Add dialog
   const handleSelectPlaceInAdd = (place: Location) => {
     setSelectedPlace(place);
-    setAddName(place.name?.split(',')[0].trim() || place.area || 'My Saved Place');
+    setAddName(place.name?.split(',')[0]?.trim() || place.area || 'My Saved Place');
     setAddSearchResults(null);
     setAddSearchError(null);
   };
@@ -502,7 +503,7 @@ export function MyLocations() {
       if (counts[key] !== undefined) {
         counts[key] += 1;
       } else {
-        counts['Other'] += 1;
+        counts['Other'] = (counts['Other'] ?? 0) + 1;
       }
     });
     return counts;

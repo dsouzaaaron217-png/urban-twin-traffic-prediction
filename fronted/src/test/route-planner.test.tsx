@@ -514,7 +514,7 @@ describe('Route Planner Page - Requirements & Functionality', () => {
     expect(expandButtons.length).toBeGreaterThanOrEqual(1);
 
     // Click Expand Map in card header
-    fireEvent.click(expandButtons[0]);
+    fireEvent.click(expandButtons[0]!);
 
     // Fullscreen view is active: header updates and Exit Fullscreen button is visible
     expect(screen.getByText(/Interactive Route Map \(Expanded View\)/i)).toBeInTheDocument();
@@ -523,12 +523,12 @@ describe('Route Planner Page - Requirements & Functionality', () => {
     expect(document.body.style.overflow).toBe('hidden');
 
     // Click Exit Fullscreen
-    fireEvent.click(exitButtons[0]);
+    fireEvent.click(exitButtons[0]!);
     expect(screen.getByText(/^Interactive Route Map$/i)).toBeInTheDocument();
     expect(document.body.style.overflow).toBe('');
 
     // Test Escape key dismissal
-    const expandAgain = screen.getAllByRole('button', { name: /expand map/i })[0];
+    const expandAgain = screen.getAllByRole('button', { name: /expand map/i })[0]!;
     fireEvent.click(expandAgain);
     expect(screen.getByText(/Interactive Route Map \(Expanded View\)/i)).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'Escape' });
@@ -595,17 +595,17 @@ describe('Route Planner Page - Requirements & Functionality', () => {
     // Select second route (Route Beta)
     const selectBetaButtons = screen.getAllByText(/Route Beta/i);
     expect(selectBetaButtons.length).toBeGreaterThanOrEqual(1);
-    fireEvent.click(selectBetaButtons[0]);
+    fireEvent.click(selectBetaButtons[0]!);
 
     // Expand map
-    const expandBtn = screen.getAllByRole('button', { name: /expand map/i })[0];
+    const expandBtn = screen.getAllByRole('button', { name: /expand map/i })[0]!;
     fireEvent.click(expandBtn);
 
     // Verify Route Beta remains active in expanded view
     expect(screen.getAllByText(/Route Beta/i).length).toBeGreaterThanOrEqual(1);
 
     // Minimize map
-    const exitBtn = screen.getAllByRole('button', { name: /exit fullscreen/i })[0];
+    const exitBtn = screen.getAllByRole('button', { name: /exit fullscreen/i })[0]!;
     fireEvent.click(exitBtn);
 
     // Verify Route Beta is still selected after returning
@@ -644,6 +644,7 @@ describe('Route Planner Page - Requirements & Functionality', () => {
             congestion_percent: 20,
             delay_seconds: 30,
             data_source: 'TomTom Flow API',
+            coordinates: [[18.52, 73.85], [18.55, 73.87]],
           },
         ]}
       />

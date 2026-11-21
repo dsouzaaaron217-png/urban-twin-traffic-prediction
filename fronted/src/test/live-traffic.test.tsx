@@ -258,7 +258,7 @@ describe('Live Traffic Page - Specifications & Business Logic', () => {
       fireEvent.click(minimizeBtn);
 
       expect(screen.getByText(/Map is minimized/i)).toBeInTheDocument();
-      const restoreBtn = screen.getAllByRole('button', { name: /Restore map/i })[0];
+      const restoreBtn = screen.getAllByRole('button', { name: /Restore map/i })[0]!;
       fireEvent.click(restoreBtn);
 
       expect(screen.queryByText(/Map is minimized/i)).not.toBeInTheDocument();

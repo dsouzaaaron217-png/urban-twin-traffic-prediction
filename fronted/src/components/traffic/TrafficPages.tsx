@@ -825,8 +825,11 @@ function DashboardHistorySection() {
   // Determine coverage period honestly
   const coverageText = useMemo(() => {
     if (displayRows.length === 0) return null;
-    const first = new Date(displayRows[0].timestamp);
-    const last = new Date(displayRows[displayRows.length - 1].timestamp);
+    const firstRow = displayRows[0];
+    const lastRow = displayRows[displayRows.length - 1];
+    if (!firstRow || !lastRow) return null;
+    const first = new Date(firstRow.timestamp);
+    const last = new Date(lastRow.timestamp);
     const fmt = (d: Date) =>
       d.toLocaleString('en-IN', {
         day: '2-digit',
@@ -1052,14 +1055,16 @@ function DashboardHistorySection() {
                   className="h-2 w-2 rounded-full inline-block"
                   style={{
                     backgroundColor:
-                      row.congestion_percent < 30
+                      row.congestion_percent == null
+                        ? '#64748b'
+                        : row.congestion_percent < 30
                         ? '#059669'
                         : row.congestion_percent < 60
                         ? '#eab308'
                         : '#dc2626',
                   }}
                 />
-                {Number(row.congestion_percent).toFixed(1)}%
+                {row.congestion_percent == null ? '—' : `${row.congestion_percent.toFixed(1)}%`}
               </span>
               <span className="text-muted-foreground">{dateLabel(row.timestamp)}</span>
             </div>

@@ -14,9 +14,9 @@ export interface LocationAutocompleteProps {
   placeholder?: string;
   value?: Location | null;
   defaultValue?: string;
-  inputValue?: string;
+  inputValue?: string | undefined;
   onSelect: (location: Location | null) => void;
-  onInputChange?: (value: string) => void;
+  onInputChange?: ((value: string) => void) | undefined;
   onClear?: () => void;
   disabled?: boolean;
   required?: boolean;
@@ -26,7 +26,7 @@ export interface LocationAutocompleteProps {
   autoFocus?: boolean;
   icon?: React.ReactNode;
   iconColor?: string;
-  rightAction?: React.ReactNode;
+  rightAction?: React.ReactNode | undefined;
   showRecentSearches?: boolean;
   debounceMs?: number;
   onSearchSubmit?: (query: string) => void;
@@ -338,7 +338,8 @@ export function LocationAutocomplete({
     } else if (e.key === 'Enter') {
       if (isOpen && highlightedIndex >= 0 && highlightedIndex < itemCount) {
         e.preventDefault();
-        handleSelect(activeItems[highlightedIndex]);
+        const highlightedItem = activeItems[highlightedIndex];
+        if (highlightedItem) handleSelect(highlightedItem);
       } else if (onSearchSubmit) {
         e.preventDefault();
         setIsOpen(false);
@@ -481,7 +482,7 @@ export function LocationAutocomplete({
                   item.area && item.area !== 'Selected area' && item.area !== 'Selected road'
                     ? item.area
                     : item.name
-                    ? item.name.split(',')[0].trim()
+                    ? (item.name.split(',')[0] ?? '').trim()
                     : item.city;
 
                 const secondaryText =

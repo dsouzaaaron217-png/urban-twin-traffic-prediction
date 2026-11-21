@@ -149,7 +149,7 @@ const MOCK_OVERVIEW: AnalyticsOverviewResponse = {
       if (dow === 3 && hr === 18) {
         return {
           day_index: dow,
-          day_name: dayNames[dow],
+          day_name: dayNames[dow] ?? 'Unknown',
           hour: hr,
           hour_label: `${hr}:00`,
           avg_congestion: 37.2,
@@ -160,7 +160,7 @@ const MOCK_OVERVIEW: AnalyticsOverviewResponse = {
       }
       return {
         day_index: dow,
-        day_name: dayNames[dow],
+        day_name: dayNames[dow] ?? 'Unknown',
         hour: hr,
         hour_label: `${hr}:00`,
         avg_congestion: null,

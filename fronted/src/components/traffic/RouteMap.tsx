@@ -78,7 +78,8 @@ function FitBoundsController({
       const seg = activeRoute.segments.find(s => s.id === highlightedSegmentId);
       if (seg && seg.coordinates && seg.coordinates.length > 0) {
         if (seg.coordinates.length === 1) {
-          map.flyTo(seg.coordinates[0], 15, { animate: true });
+          const point = seg.coordinates[0];
+          if (point) map.flyTo(point, 15, { animate: true });
         } else {
           map.fitBounds(seg.coordinates, {
             padding: [70, 70],

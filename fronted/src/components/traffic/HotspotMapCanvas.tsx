@@ -14,13 +14,13 @@ import type { TrafficReading, TrafficSegment } from '@/types/traffic';
 import { getTrafficColor, getTrafficCondition } from '@/lib/traffic-utils';
 
 export interface HotspotMapCanvasProps {
-  segments?: TrafficSegment[];
-  selectedSegmentId?: string | null;
-  onSelectSegment?: (segmentId: string) => void;
-  readings?: TrafficReading[];
-  center?: [number, number];
-  isExpanded?: boolean;
-  onToggleExpand?: () => void;
+  segments?: TrafficSegment[] | undefined;
+  selectedSegmentId?: string | null | undefined;
+  onSelectSegment?: ((segmentId: string) => void) | undefined;
+  readings?: TrafficReading[] | undefined;
+  center?: [number, number] | undefined;
+  isExpanded?: boolean | undefined;
+  onToggleExpand?: (() => void) | undefined;
 }
 
 function FitBoundsController({
@@ -62,7 +62,8 @@ function FitBoundsController({
       const selected = segments.find(s => s.id === selectedSegmentId);
       if (selected && selected.coordinates && selected.coordinates.length > 0) {
         if (selected.coordinates.length === 1) {
-          map.flyTo(selected.coordinates[0], 16, { animate: true });
+          const point = selected.coordinates[0];
+          if (point) map.flyTo(point, 16, { animate: true });
         } else {
           map.fitBounds(selected.coordinates, {
             padding: [60, 60],
@@ -123,9 +124,10 @@ export default function HotspotMapCanvas({
       let lonSum = 0;
       let count = 0;
       segments.forEach(s => {
-        if (s.coordinates && s.coordinates.length > 0) {
-          latSum += s.coordinates[0][0];
-          lonSum += s.coordinates[0][1];
+        const firstPoint = s.coordinates?.[0];
+        if (firstPoint) {
+          latSum += firstPoint[0];
+          lonSum += firstPoint[1];
           count += 1;
         }
       });
@@ -222,7 +224,7 @@ export default function HotspotMapCanvas({
         {/* 1. Road Segments rendering */}
         {hasSegments &&
           segments.map(seg => {
-            if (!seg.coordinates || seg.coordinates.length < 2) return null;
+            if (!seg.coordinates || seg.coordinates.length < 2 || !seg.coordinates[0]) return null;
             const isSelected = seg.id === selectedSegmentId;
             const color = getTrafficColor(seg.congestion_percent);
             const condition = getTrafficCondition(seg.congestion_percent);
@@ -270,7 +272,9 @@ export default function HotspotMapCanvas({
                     lineJoin: 'round',
                   }}
                   eventHandlers={{
-                    click: () => onSelectSegment?.(seg.id),
+                    click: () => {
+                      if (seg.id) onSelectSegment?.(seg.id);
+                    },
                   }}
                 >
                   <Popup>
@@ -319,7 +323,9 @@ export default function HotspotMapCanvas({
 
                       <button
                         type="button"
-                        onClick={() => onSelectSegment?.(seg.id)}
+                        onClick={() => {
+                          if (seg.id) onSelectSegment?.(seg.id);
+                        }}
                         className="w-full mt-1.5 py-1 px-2 rounded bg-primary text-primary-foreground hover:bg-primary/90 text-center font-medium text-[11px] cursor-pointer"
                       >
                         {isSelected ? 'Currently Selected' : 'Select Segment Details'}
@@ -330,7 +336,7 @@ export default function HotspotMapCanvas({
 
                 {/* Small indicator marker at start of segment */}
                 <CircleMarker
-                  center={seg.coordinates[0]}
+                  center={seg.coordinates[0]!}
                   radius={isSelected ? 6 : 4}
                   pathOptions={{
                     color: isSelected ? '#0284c7' : color,
@@ -339,7 +345,9 @@ export default function HotspotMapCanvas({
                     weight: isSelected ? 2 : 1,
                   }}
                   eventHandlers={{
-                    click: () => onSelectSegment?.(seg.id),
+                    click: () => {
+                      if (seg.id) onSelectSegment?.(seg.id);
+                    },
                   }}
                 />
               </React.Fragment>
@@ -349,6 +357,7 @@ export default function HotspotMapCanvas({
         {/* 2. Backward-compatible CircleMarkers for historical readings if no segments */}
         {!hasSegments &&
           readings.map(r => {
+            if (r.congestion_percent === null) return null;
             const color =
               r.congestion_percent >= 60
                 ? '#dc2626'
@@ -369,7 +378,7 @@ export default function HotspotMapCanvas({
                   <br />
                   Congestion: {r.congestion_percent.toFixed(1)}%
                   <br />
-                  Speed: {r.current_speed_kmh.toFixed(1)} km/h
+                  Speed: {r.current_speed_kmh === null ? '—' : `${r.current_speed_kmh.toFixed(1)} km/h`}
                 </Popup>
               </CircleMarker>
             );

@@ -7,9 +7,9 @@ const MapCanvas = lazy(() => import('./MapCanvas'));
 export interface TrafficMapProps {
   expanded?: boolean;
   isFullscreen?: boolean;
-  height?: string | number;
-  selectedSegmentIndex?: number | null;
-  onSelectSegment?: (index: number | null) => void;
+  height?: string | number | undefined;
+  selectedSegmentIndex?: number | null | undefined;
+  onSelectSegment?: ((index: number | null) => void) | undefined;
   className?: string;
 }
 

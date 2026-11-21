@@ -248,6 +248,7 @@ export function RoutePlannerPage() {
       ];
       return () => timers.forEach(t => clearTimeout(t));
     }
+    return undefined;
   }, [isMapMinimized]);
 
   // Active route calculation query tracker to prevent race conditions
@@ -274,7 +275,7 @@ export function RoutePlannerPage() {
           const parsedStart: Location = {
             name: startName || 'Saved Location',
             city: params.get('start_city') || 'Pune',
-            area: params.get('start_area') || (startName ? startName.split(',')[0].trim() : 'Start'),
+            area: params.get('start_area') || (startName ? (startName.split(',')[0] ?? '').trim() : 'Start'),
             latitude: parseFloat(startLat),
             longitude: parseFloat(startLon),
           };
@@ -291,7 +292,7 @@ export function RoutePlannerPage() {
           const parsedDest: Location = {
             name: destName || 'Saved Destination',
             city: params.get('dest_city') || 'Pune',
-            area: params.get('dest_area') || (destName ? destName.split(',')[0].trim() : 'Destination'),
+            area: params.get('dest_area') || (destName ? (destName.split(',')[0] ?? '').trim() : 'Destination'),
             latitude: parseFloat(destLat),
             longitude: parseFloat(destLon),
           };
@@ -504,7 +505,7 @@ export function RoutePlannerPage() {
       desc: 'Prioritizes shortest route distance',
     },
     {
-      value: 'least_congested',
+      value: 'least-congested',
       label: 'Least Congested',
       desc: 'Prioritizes routes with minimal traffic delays',
     },

@@ -85,7 +85,7 @@ function SelectedSegmentController({
     ) {
       const coords = segments[selectedSegmentIndex].coordinates;
       const mid = coords[Math.floor(coords.length / 2)];
-      map.panTo([mid[0], mid[1]], { animate: true, duration: 0.5 });
+      if (mid) map.panTo([mid[0], mid[1]], { animate: true, duration: 0.5 });
     }
   }, [selectedSegmentIndex, segments, map]);
   return null;
@@ -134,12 +134,12 @@ function MapAutoResize({ expanded, isFullscreen }: { expanded?: boolean; isFulls
 }
 
 export interface MapCanvasProps {
-  selectedSegmentIndex?: number | null;
-  onSelectSegment?: (index: number | null) => void;
+  selectedSegmentIndex?: number | null | undefined;
+  onSelectSegment?: ((index: number | null) => void) | undefined;
   className?: string;
   expanded?: boolean;
   isFullscreen?: boolean;
-  height?: string | number;
+  height?: string | number | undefined;
 }
 
 export default function MapCanvas({
@@ -292,6 +292,7 @@ export default function MapCanvas({
           const condition = getTrafficCondition(segment.congestion_percent);
           const startPt = segment.coordinates[0];
           const midPt = segment.coordinates[Math.floor(segment.coordinates.length / 2)];
+          if (!startPt || !midPt) return null;
           const key = `seg-${segment.id || index}-${startPt[0].toFixed(4)}-${midPt[1].toFixed(4)}`;
           const isSelected = selectedSegmentIndex === index;
 

@@ -379,7 +379,7 @@ describe('My Locations Page', () => {
     });
 
     // Click Edit button for My Apartment card
-    const card = screen.getByText('My Apartment').closest('.panel')!;
+    const card = screen.getByText('My Apartment').closest<HTMLElement>('.panel')!;
     const editBtn = within(card).getByTitle('Edit location');
     fireEvent.click(editBtn);
 
@@ -413,7 +413,7 @@ describe('My Locations Page', () => {
     });
 
     // Click Delete button on COEP Engineering Campus card
-    const card = screen.getByText('COEP Engineering Campus').closest('.panel')!;
+    const card = screen.getByText('COEP Engineering Campus').closest<HTMLElement>('.panel')!;
     const deleteBtn = within(card).getByTitle('Delete location');
     fireEvent.click(deleteBtn);
 
@@ -440,7 +440,7 @@ describe('My Locations Page', () => {
     });
 
     // Click 'Use Start' on My Apartment card
-    const card = screen.getByText('My Apartment').closest('.panel')!;
+    const card = screen.getByText('My Apartment').closest<HTMLElement>('.panel')!;
     const useStartBtn = within(card).getByRole('button', { name: /use start/i });
     fireEvent.click(useStartBtn);
 
@@ -515,7 +515,7 @@ describe('My Locations Page', () => {
     });
 
     // 1. Edit dialog
-    const card = screen.getByText('My Apartment').closest('.panel')!;
+    const card = screen.getByText('My Apartment').closest<HTMLElement>('.panel')!;
     const editBtn = within(card).getByTitle('Edit location');
     fireEvent.click(editBtn);
 

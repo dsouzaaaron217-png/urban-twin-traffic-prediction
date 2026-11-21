@@ -87,7 +87,7 @@ describe('Google Maps-Style LocationAutocomplete Component', () => {
   it('updates suggestions dynamically as query changes from "S" to "Sh" to "Shiv"', async () => {
     vi.spyOn(api, 'searchLocations').mockImplementation(async (query: string) => {
       if (query === 'Shiv') {
-        return [MOCK_LOCATIONS[0]]; // Only Shivajinagar
+        return [MOCK_LOCATIONS[0]!]; // Only Shivajinagar
       }
       return MOCK_LOCATIONS;
     });
@@ -275,8 +275,8 @@ describe('Google Maps-Style LocationAutocomplete Component', () => {
   });
 
   it('displays recent searches when focused and empty, and clears them on Clear all', async () => {
-    saveRecentSearch(MOCK_LOCATIONS[0]);
-    saveRecentSearch(MOCK_LOCATIONS[1]);
+    saveRecentSearch(MOCK_LOCATIONS[0]!);
+    saveRecentSearch(MOCK_LOCATIONS[1]!);
 
     const handleSelect = vi.fn();
 
@@ -308,7 +308,7 @@ describe('Google Maps-Style LocationAutocomplete Component', () => {
 
   it('invalidates previous location selection when user edits the text', async () => {
     function ControlledTest() {
-      const [selected, setSelected] = useState<Location | null>(MOCK_LOCATIONS[0]);
+      const [selected, setSelected] = useState<Location | null>(MOCK_LOCATIONS[0]!);
       return (
         <div>
           <span data-testid="selected-coords">

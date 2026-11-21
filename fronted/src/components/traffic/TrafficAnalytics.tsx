@@ -228,12 +228,12 @@ export function TrafficAnalytics() {
   // Current filter params dict
   const currentFilterParams = useMemo(() => {
     const params: Record<string, string> = {};
-    if (selectedCity && selectedCity !== 'All') params.city = selectedCity;
-    if (selectedRoad && selectedRoad !== 'All') params.road = selectedRoad;
-    if (startDate) params.start_date = startDate;
-    if (endDate) params.end_date = endDate;
-    if (selectedTimeOfDay && selectedTimeOfDay !== 'all') params.time_of_day = selectedTimeOfDay;
-    if (selectedSeverity && selectedSeverity !== 'all') params.severity = selectedSeverity;
+    if (selectedCity && selectedCity !== 'All') params['city'] = selectedCity;
+    if (selectedRoad && selectedRoad !== 'All') params['road'] = selectedRoad;
+    if (startDate) params['start_date'] = startDate;
+    if (endDate) params['end_date'] = endDate;
+    if (selectedTimeOfDay && selectedTimeOfDay !== 'all') params['time_of_day'] = selectedTimeOfDay;
+    if (selectedSeverity && selectedSeverity !== 'all') params['severity'] = selectedSeverity;
     return params;
   }, [selectedCity, selectedRoad, startDate, endDate, selectedTimeOfDay, selectedSeverity]);
 
@@ -295,7 +295,7 @@ export function TrafficAnalytics() {
         sort_order: tableSortOrder,
       };
       if (tableSearch.trim()) {
-        params.search = tableSearch.trim();
+        params['search'] = tableSearch.trim();
       }
 
       const res = await getAnalyticsRecords(params, controller.signal);
@@ -976,9 +976,9 @@ export function TrafficAnalytics() {
                         color: 'var(--foreground)',
                       }}
                       labelFormatter={(val: unknown) => formatFullTimestamp(String(val))}
-                      formatter={(val: unknown, name: unknown) => [
-                        `${val} ${trendMetric === 'congestion' ? '%' : 'km/h'}`,
-                        name,
+                      formatter={val => [
+                        `${String(val)} ${trendMetric === 'congestion' ? '%' : 'km/h'}`,
+                        '',
                       ]}
                     />
                     <Legend wrapperStyle={{ fontSize: 11, paddingTop: 10 }} />

@@ -133,6 +133,8 @@ const MOCK_HISTORY: TrafficReading[] = [
     longitude: 73.894,
     current_speed_kmh: 30.0,
     free_flow_speed_kmh: 45.0,
+    current_travel_time_seconds: null,
+    free_flow_travel_time_seconds: null,
     congestion_percent: 33.3,
   },
   {
@@ -143,6 +145,8 @@ const MOCK_HISTORY: TrafficReading[] = [
     longitude: 73.894,
     current_speed_kmh: 22.0,
     free_flow_speed_kmh: 45.0,
+    current_travel_time_seconds: null,
+    free_flow_travel_time_seconds: null,
     congestion_percent: 51.1,
   },
   {
@@ -153,6 +157,8 @@ const MOCK_HISTORY: TrafficReading[] = [
     longitude: 73.894,
     current_speed_kmh: 24.5,
     free_flow_speed_kmh: 45.0,
+    current_travel_time_seconds: null,
+    free_flow_travel_time_seconds: null,
     congestion_percent: 45.5,
   },
 ];
@@ -280,7 +286,7 @@ describe('Traffic Control Dashboard UI Redesign (Design A)', () => {
       // Click restore (either button restores the map)
       const restoreButtons = screen.getAllByRole('button', { name: /Restore map/i });
       expect(restoreButtons.length).toBeGreaterThan(0);
-      fireEvent.click(restoreButtons[0]);
+      fireEvent.click(restoreButtons[0]!);
       expect(screen.getByTestId('traffic-map-mock')).toBeInTheDocument();
     });
 

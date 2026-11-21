@@ -14,12 +14,12 @@ import { getTrafficColor, getTrafficCondition } from '@/lib/traffic-utils';
 
 export interface SavedLocationsMapCanvasProps {
   locations?: SavedLocation[];
-  selectedLocationId?: string | null;
-  onSelectLocation?: (id: string) => void;
-  onPlanRoute?: (location: SavedLocation, role: 'start' | 'destination') => void;
-  center?: [number, number];
+  selectedLocationId?: string | null | undefined;
+  onSelectLocation?: ((id: string) => void) | undefined;
+  onPlanRoute?: ((location: SavedLocation, role: 'start' | 'destination') => void) | undefined;
+  center?: [number, number] | undefined;
   isExpanded?: boolean;
-  onToggleExpand?: () => void;
+  onToggleExpand?: (() => void) | undefined;
 }
 
 export function getLabelColor(label?: LocationLabel | string): string {
@@ -81,7 +81,8 @@ function FitBoundsController({
         .map(l => [l.latitude, l.longitude]);
 
       if (validPoints.length === 1) {
-        map.flyTo(validPoints[0], 14, { animate: true });
+        const point = validPoints[0];
+        if (point) map.flyTo(point, 14, { animate: true });
       } else if (validPoints.length > 1) {
         map.fitBounds(validPoints, {
           padding: [50, 50],
