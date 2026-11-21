@@ -29,7 +29,7 @@ export const API_BASE = (import.meta.env['VITE_API_BASE_URL'] || 'http://127.0.0
 export async function request<T>(
   path: string,
   signal?: AbortSignal,
-  options: { method?: 'GET' | 'POST'; body?: unknown } = {}
+  options: { method?: RequestInit['method']; body?: unknown } = {}
 ): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -39,8 +39,7 @@ export async function request<T>(
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       method: options.method ?? 'GET',
-      headers: options.body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      ...(options.body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options.body) }),
       signal: controller.signal,
     });
 
@@ -143,8 +142,8 @@ export async function getNearbySegments(
             ? Math.max(0, Number(segment.current_travel_time_seconds) - Number(segment.free_flow_travel_time_seconds))
             : null),
       confidence: segment.confidence !== null && segment.confidence !== undefined ? Number(segment.confidence) : null,
-      frc: segment.frc,
-      last_updated: segment.last_updated,
+      ...(segment.frc === undefined ? {} : { frc: segment.frc }),
+      ...(segment.last_updated === undefined ? {} : { last_updated: segment.last_updated }),
     }));
 }
 
@@ -185,7 +184,7 @@ export async function getHotspots(
                 ? Math.max(0, Number(segment.current_travel_time_seconds) - Number(segment.free_flow_travel_time_seconds))
                 : null),
           confidence: segment.confidence !== null && segment.confidence !== undefined ? Number(segment.confidence) : null,
-          frc: segment.frc,
+          ...(segment.frc === undefined ? {} : { frc: segment.frc }),
           last_updated: segment.last_updated || data.generated_at,
         }));
 
@@ -221,10 +220,10 @@ export async function searchLocations(query: string, signal?: AbortSignal): Prom
     );
 
     if (payload && Array.isArray(payload.locations) && payload.locations.length > 0) {
-      return payload.locations.map(loc => ({
+    return payload.locations.map(loc => ({
         name: loc.name || `${loc.area || ''}, ${loc.city}`.trim(),
         city: loc.city || 'Unknown',
-        area: loc.area || (loc.name ? loc.name.split(',')[0].trim() : 'Selected area'),
+        area: loc.area || (loc.name ? (loc.name.split(',')[0] ?? '').trim() : 'Selected area'),
         latitude: Number(loc.latitude),
         longitude: Number(loc.longitude),
       }));
@@ -303,7 +302,7 @@ export async function getRoutes(
   };
 
   if (departAt) {
-    body.depart_at = departAt;
+    body['depart_at'] = departAt;
   }
 
   const data = await request<RoutePlanResponse>('/api/routes', signal, {
@@ -347,16 +346,16 @@ export async function getMonitoredLocations(signal?: AbortSignal): Promise<Monit
       if (!row || typeof row !== 'object') return false;
       const item = row as Record<string, unknown>;
       return (
-        typeof item.latitude === 'number' &&
-        Number.isFinite(item.latitude) &&
-        typeof item.longitude === 'number' &&
-        Number.isFinite(item.longitude)
+      typeof item['latitude'] === 'number' &&
+        Number.isFinite(item['latitude']) &&
+        typeof item['longitude'] === 'number' &&
+        Number.isFinite(item['longitude'])
       );
     })
     .map(row => ({
       name: String(row.name || row.area || row.city || 'Monitored location'),
       city: String(row.city || 'Unknown'),
-      area: row.area ? String(row.area) : undefined,
+      ...(row.area ? { area: String(row.area) } : {}),
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
     }));

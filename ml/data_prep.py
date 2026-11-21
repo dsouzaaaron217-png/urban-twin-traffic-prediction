@@ -14,6 +14,7 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from services.data_pipeline import (
     CLEANED_CSV_FILE,
@@ -35,11 +36,32 @@ FEATURE_COLUMNS = [
     "cos_hour",
     "sin_dow",
     "cos_dow",
+    "is_national_holiday",
     "prior_congestion",
     "prior_speed",
     "cong_trend",
     "speed_trend",
+    "lag_15_congestion",
+    "lag_30_congestion",
+    "lag_60_congestion",
+    "lag_15_speed",
+    "lag_30_speed",
+    "lag_60_speed",
+    "rolling_30_congestion_mean",
+    "rolling_30_congestion_std",
+    "rolling_60_congestion_mean",
+    "rolling_60_congestion_std",
+    "rolling_30_speed_mean",
+    "rolling_60_speed_mean",
+    "corridor_latitude",
+    "corridor_longitude",
+    "neighbor_mean_congestion",
+    "neighbor_mean_speed",
+    "neighbor_corridor_count",
 ]
+
+LOCAL_TIMEZONE = ZoneInfo("Asia/Kolkata")
+FIXED_INDIAN_NATIONAL_HOLIDAYS = {(1, 26), (8, 15), (10, 2)}
 
 HORIZON_CONFIGS = {
     15: {"target_min": 15.0, "min_window": 10.0, "max_window": 25.0},
@@ -62,8 +84,14 @@ def load_dataset(csv_path: Optional[str | Path] = None) -> pd.DataFrame:
             raise FileNotFoundError(f"Neither cleaned dataset nor raw dataset found: {target_path}")
 
     df = pd.read_csv(target_path)
+    return prepare_dataset_frame(df)
+
+
+def prepare_dataset_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Validate and normalize a canonical traffic table without changing its source."""
+    df = df.copy()
     if df.empty:
-        raise ValueError(f"Traffic dataset at {target_path} is empty.")
+        raise ValueError("Traffic dataset is empty.")
 
     required_cols = [
         "timestamp",
@@ -75,8 +103,15 @@ def load_dataset(csv_path: Optional[str | Path] = None) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing required columns in dataset: {missing}")
 
-    # Parse timestamps
-    df["dt"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    def parse_local_timestamp(value):
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return pd.NaT
+        if parsed.tzinfo is None:
+            return parsed.tz_localize(LOCAL_TIMEZONE)
+        return parsed.tz_convert(LOCAL_TIMEZONE)
+
+    df["dt"] = df["timestamp"].map(parse_local_timestamp)
     df = df.dropna(subset=["dt", "current_speed_kmh", "free_flow_speed_kmh"])
 
     # Road / Area identity
@@ -102,8 +137,34 @@ def load_dataset(csv_path: Optional[str | Path] = None) -> pd.DataFrame:
         ).clip(0.0, 100.0).round(1)
 
     df = df.dropna(subset=["current_speed_kmh", "free_flow_speed_kmh", "congestion_percent"])
-    df = df.sort_values("dt").reset_index(drop=True)
+    df = df.sort_values(["city", "area", "dt"]).reset_index(drop=True)
     return df
+
+
+def load_verified_phase1_dataset() -> pd.DataFrame:
+    """Load only validated TomTom observations from Phase 1 SQLite provenance storage."""
+    import sqlite3
+    from services.phase1_pipeline import DB_PATH
+
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        with sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True) as connection:
+            rows = pd.read_sql_query(
+                """SELECT timestamp_utc AS timestamp, city, area, latitude, longitude,
+                          current_speed_kmh, free_flow_speed_kmh,
+                          current_travel_time_seconds, free_flow_travel_time_seconds,
+                          confidence, congestion_percent, source, quality, run_id
+                   FROM observations
+                   WHERE lower(source) IN ('tomtom', 'verified_csv_import')
+                     AND quality IN ('validated', 'gap_after_previous_observation')""",
+                connection,
+            )
+    except (sqlite3.Error, ValueError):
+        return pd.DataFrame()
+    if rows.empty:
+        return rows
+    return prepare_dataset_frame(rows)
 
 
 # Backwards compatibility alias
@@ -138,6 +199,108 @@ def inspect_dataset_stats(df: pd.DataFrame) -> Dict[str, Any]:
         "road_counts": road_counts,
         "roads_with_repeated_observations": roads_with_repeated,
         "has_sufficient_history": total_rows >= 50 and roads_with_repeated >= 1,
+    }
+
+
+def build_as_of_features(df: pd.DataFrame, observation: pd.Series) -> Dict[str, float]:
+    """Build numeric features using only same-corridor/current-or-past observations.
+
+    Neighbor summaries are limited to other corridors in the same city, within 3 km,
+    observed in the prior 30 minutes. Missing lags/neighbors remain NaN for train-only
+    preprocessing; they are never filled from future rows.
+    """
+    now = pd.Timestamp(observation["dt"])
+    now_local = now.tz_convert(LOCAL_TIMEZONE) if now.tzinfo else now.tz_localize(LOCAL_TIMEZONE)
+    city = str(observation["city"])
+    area = str(observation["area"])
+    known = df[(df["city"].astype(str) == city) & (df["area"].astype(str) == area) & (df["dt"] <= now)]
+    known = known.sort_values("dt")
+    current = known.iloc[-1]
+    previous = known[known["dt"] < now]
+    prior = previous.iloc[-1] if not previous.empty else current
+
+    def lag_value(column: str, minutes: int) -> float:
+        target = now - pd.Timedelta(minutes=minutes)
+        candidates = known[known["dt"] <= target]
+        if candidates.empty:
+            return float("nan")
+        candidate = candidates.iloc[-1]
+        # A lag is missing if a data gap means its reading is older than one poll step.
+        if (target - candidate["dt"]).total_seconds() > 15 * 60:
+            return float("nan")
+        return float(candidate[column])
+
+    def rolling_stats(window_minutes: int, column: str) -> tuple[float, float]:
+        start = now - pd.Timedelta(minutes=window_minutes)
+        values = known.loc[known["dt"] >= start, column].astype(float)
+        if values.empty:
+            return float("nan"), float("nan")
+        return float(values.mean()), float(values.std(ddof=0))
+
+    cong_30_mean, cong_30_std = rolling_stats(30, "congestion_percent")
+    cong_60_mean, cong_60_std = rolling_stats(60, "congestion_percent")
+    speed_30_mean, _ = rolling_stats(30, "current_speed_kmh")
+    speed_60_mean, _ = rolling_stats(60, "current_speed_kmh")
+
+    neighbors = df[
+        (df["city"].astype(str) == city)
+        & (df["area"].astype(str) != area)
+        & (df["dt"] <= now)
+        & (df["dt"] >= now - pd.Timedelta(minutes=30))
+    ].sort_values("dt").drop_duplicates("area", keep="last")
+    try:
+        lat1, lon1 = float(current["latitude"]), float(current["longitude"])
+        if not neighbors.empty:
+            lat2 = np.radians(neighbors["latitude"].astype(float).to_numpy())
+            lon2 = np.radians(neighbors["longitude"].astype(float).to_numpy())
+            lat1r, lon1r = np.radians(lat1), np.radians(lon1)
+            dlat, dlon = lat2 - lat1r, lon2 - lon1r
+            distances = 6371.0 * 2 * np.arcsin(np.sqrt(
+                np.sin(dlat / 2) ** 2 + np.cos(lat1r) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+            ))
+            neighbors = neighbors.loc[distances <= 3.0]
+    except (KeyError, TypeError, ValueError):
+        neighbors = neighbors.iloc[0:0]
+
+    hour = now_local.hour + now_local.minute / 60.0
+    dayofweek = now_local.dayofweek
+    current_congestion = float(current["congestion_percent"])
+    current_speed = float(current["current_speed_kmh"])
+    return {
+        "current_congestion_percent": current_congestion,
+        "current_speed_kmh": current_speed,
+        "free_flow_speed_kmh": float(current["free_flow_speed_kmh"]),
+        "speed_ratio": current_speed / max(float(current["free_flow_speed_kmh"]), 1.0),
+        "free_flow_gap": float(current["free_flow_speed_kmh"]) - current_speed,
+        "hour": hour,
+        "dayofweek": float(dayofweek),
+        "is_weekend": float(dayofweek in (5, 6)),
+        "sin_hour": math.sin(2 * math.pi * hour / 24.0),
+        "cos_hour": math.cos(2 * math.pi * hour / 24.0),
+        "sin_dow": math.sin(2 * math.pi * dayofweek / 7.0),
+        "cos_dow": math.cos(2 * math.pi * dayofweek / 7.0),
+        "is_national_holiday": float((now_local.month, now_local.day) in FIXED_INDIAN_NATIONAL_HOLIDAYS),
+        "prior_congestion": float(prior["congestion_percent"]),
+        "prior_speed": float(prior["current_speed_kmh"]),
+        "cong_trend": current_congestion - float(prior["congestion_percent"]),
+        "speed_trend": current_speed - float(prior["current_speed_kmh"]),
+        "lag_15_congestion": lag_value("congestion_percent", 15),
+        "lag_30_congestion": lag_value("congestion_percent", 30),
+        "lag_60_congestion": lag_value("congestion_percent", 60),
+        "lag_15_speed": lag_value("current_speed_kmh", 15),
+        "lag_30_speed": lag_value("current_speed_kmh", 30),
+        "lag_60_speed": lag_value("current_speed_kmh", 60),
+        "rolling_30_congestion_mean": cong_30_mean,
+        "rolling_30_congestion_std": cong_30_std,
+        "rolling_60_congestion_mean": cong_60_mean,
+        "rolling_60_congestion_std": cong_60_std,
+        "rolling_30_speed_mean": speed_30_mean,
+        "rolling_60_speed_mean": speed_60_mean,
+        "corridor_latitude": float(current.get("latitude", float("nan"))),
+        "corridor_longitude": float(current.get("longitude", float("nan"))),
+        "neighbor_mean_congestion": float(neighbors["congestion_percent"].mean()) if not neighbors.empty else float("nan"),
+        "neighbor_mean_speed": float(neighbors["current_speed_kmh"].mean()) if not neighbors.empty else float("nan"),
+        "neighbor_corridor_count": float(neighbors["area"].nunique()),
     }
 
 
@@ -230,8 +393,7 @@ def construct_prediction_pairs(
             speed_trend = round(cur_speed - prior_speed, 2)
             actual_horizon_min = round((row_future["dt"] - t_now).total_seconds() / 60.0, 1)
 
-            samples.append(
-                {
+            sample = {
                     "timestamp": t_now,
                     "target_timestamp": row_future["dt"],
                     "city": city,
@@ -258,7 +420,8 @@ def construct_prediction_pairs(
                     # Backwards compatibility target column name for 15m
                     "target_speed_15m": tar_speed,
                 }
-            )
+            sample.update(build_as_of_features(df, row_now))
+            samples.append(sample)
 
     if not samples:
         return pd.DataFrame()
@@ -293,7 +456,7 @@ def chronological_train_test_split(
         train_df = train_candidate.reset_index(drop=True)
 
     if train_df.empty:
-        train_df = train_candidate.reset_index(drop=True)
+        raise ValueError("Chronological split has no training rows after target-window embargo.")
 
     test_df = df_sorted.iloc[split_idx:].copy().reset_index(drop=True)
 

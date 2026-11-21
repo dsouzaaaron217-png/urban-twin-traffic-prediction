@@ -12,12 +12,13 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from zoneinfo import ZoneInfo
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from ml.data_prep import FEATURE_COLUMNS
+from ml.data_prep import FEATURE_COLUMNS, build_as_of_features
 from ml.train import PersistencePredictor
 
 
@@ -42,6 +43,7 @@ class TrafficPredictor:
     def load(self) -> bool:
         """Loads available trained models (15m, 30m, 60m) and metadata from disk."""
         loaded_any = False
+        self.models.clear()
         if self.meta_path.exists():
             try:
                 with open(self.meta_path, "r", encoding="utf-8") as f:
@@ -50,10 +52,24 @@ class TrafficPredictor:
                 print(f"Warning: Failed to load model metadata: {e}")
                 self.metadata = None
 
+        if not self.metadata or self.metadata.get("data_provenance_status") != "verified":
+            self.models.clear()
+            if self.metadata is not None:
+                self.metadata = {
+                    "status": "legacy_unverified",
+                    "data_provenance_status": "unverified",
+                    "message": "Existing model artifacts lack row-level verified data provenance and are not served.",
+                    "supported_horizons": [],
+                    "evaluation_by_horizon": {},
+                }
+            return False
+
         for horizon in [15, 30, 60]:
-            model_file = self.models_dir / f"traffic_model_{horizon}m.joblib"
-            # Fallback for 15m to legacy filename if needed
-            if not model_file.exists() and horizon == 15:
+            if self.metadata.get("supported_horizons") is not None and horizon not in self.metadata["supported_horizons"]:
+                continue
+            registered_path = (self.metadata or {}).get("model_files", {}).get(str(horizon))
+            model_file = self.models_dir / registered_path if registered_path else self.models_dir / f"traffic_model_{horizon}m.joblib"
+            if not model_file.exists() and horizon == 15 and not registered_path:
                 model_file = self.models_dir / "traffic_speed_model.joblib"
 
             if model_file.exists():
@@ -89,6 +105,7 @@ class TrafficPredictor:
         area: Optional[str] = None,
         sensor_confidence: Optional[float] = None,
         historical_sample_count: Optional[int] = None,
+        feature_history: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """
         Predicts traffic conditions for a given horizon (15, 30, or 60 min).
@@ -137,10 +154,22 @@ class TrafficPredictor:
 
         model_mae = horizon_meta.get("model_metrics", {}).get("mae_percent")
         model_rmse = horizon_meta.get("model_metrics", {}).get("rmse_percent")
+        fallback_reason = horizon_meta.get("fallback_reason")
+        if horizon_meta and not horizon_meta.get("supported", True):
+            return {"road_id": road_id or area or "segment", "predicted_speed_kmh": None,
+                    "predicted_congestion_percent": None, "current_speed_kmh": round(current_speed_kmh, 1),
+                    "free_flow_speed_kmh": round(free_flow_speed_kmh, 1),
+                    "current_congestion_percent": round(congestion_percent, 1), "congestion_delta": 0.0,
+                    "speed_delta": 0.0, "direction": "insufficient_history",
+                    "direction_label": "Unavailable (Insufficient Horizon History)", "confidence": 0.0,
+                    "confidence_label": "Unavailable", "horizon_minutes": horizon_minutes,
+                    "data_tier": "insufficient", "model_status": "insufficient_data",
+                    "model_name": "None", "paired_samples": 0, "fallback_reason": horizon_meta.get("reason"),
+                    "explanation": horizon_meta.get("reason", "Insufficient paired history for this horizon.")}
 
         # Location data sufficiency evaluation
         loc_support = horizon_meta.get("location_support", {})
-        data_tier = "established"
+        data_tier = "insufficient"
         paired_samples = None
 
         target_key = f"{city}:{area}" if city and area else None
@@ -149,20 +178,22 @@ class TrafficPredictor:
             data_tier = matched_sup.get("tier", "established")
             paired_samples = matched_sup.get("paired_samples")
         elif area:
-            for k, v in loc_support.items():
-                if area.lower() in k.lower():
-                    data_tier = v.get("tier", "established")
-                    paired_samples = v.get("paired_samples")
-                    break
-            else:
-                if historical_sample_count is not None:
-                    if historical_sample_count >= 25:
-                        data_tier = "established"
-                    elif historical_sample_count >= 8:
-                        data_tier = "experimental"
-                    else:
-                        data_tier = "insufficient"
-                    paired_samples = historical_sample_count
+            matches = [
+                value for value in loc_support.values()
+                if str(value.get("area", "")).casefold() == area.casefold()
+                and (not city or str(value.get("city", "")).casefold() == city.casefold())
+            ]
+            if len(matches) == 1:
+                data_tier = matches[0].get("tier", "insufficient")
+                paired_samples = matches[0].get("paired_samples")
+            elif historical_sample_count is not None:
+                if historical_sample_count >= 25:
+                    data_tier = "established"
+                elif historical_sample_count >= 8:
+                    data_tier = "experimental"
+                else:
+                    data_tier = "insufficient"
+                paired_samples = historical_sample_count
         elif historical_sample_count is not None:
             if historical_sample_count >= 25:
                 data_tier = "established"
@@ -197,8 +228,9 @@ class TrafficPredictor:
                 ),
             }
 
-        hour = dt.hour
-        dayofweek = dt.weekday()
+        local_dt = dt.astimezone(ZoneInfo("Asia/Kolkata")) if dt.tzinfo else dt
+        hour = local_dt.hour
+        dayofweek = local_dt.weekday()
         is_weekend = 1 if dayofweek in (5, 6) else 0
         sin_hour = math.sin(2.0 * math.pi * hour / 24.0)
         cos_hour = math.cos(2.0 * math.pi * hour / 24.0)
@@ -246,10 +278,29 @@ class TrafficPredictor:
                     "cong_trend": [cong_trend],
                     "speed_trend": [speed_trend],
                 }
+                if feature_history is not None and not feature_history.empty:
+                    history = feature_history.copy()
+                    if "dt" not in history.columns and "timestamp" in history.columns:
+                        history["dt"] = pd.to_datetime(history["timestamp"], errors="coerce")
+                    history = history.dropna(subset=["dt"]).sort_values("dt")
+                    if not history.empty:
+                        as_of = build_as_of_features(history, history.iloc[-1])
+                        features_dict.update({key: [value] for key, value in as_of.items()})
+                for feature in FEATURE_COLUMNS:
+                    features_dict.setdefault(feature, [float("nan")])
                 features_df = pd.DataFrame(features_dict, columns=FEATURE_COLUMNS)
-                pred_delta = float(model.predict(features_df)[0])
-
-                raw_cong = congestion_percent + pred_delta
+                model_name = getattr(model, "model_name", None)
+                if not model_name and self.metadata and "selected_model_by_horizon" in self.metadata:
+                    model_name = self.metadata["selected_model_by_horizon"].get(f"{horizon_minutes}m")
+                if not model_name:
+                    model_name = type(model).__name__
+                is_absolute_predictor = callable(getattr(model, "predict_for_location", None))
+                if is_absolute_predictor:
+                    predicted_value = float(model.predict_for_location(city, area, hour))
+                    raw_cong = predicted_value
+                else:
+                    pred_delta = float(model.predict(features_df)[0])
+                    raw_cong = congestion_percent + pred_delta
                 predicted_congestion = round(max(0.0, min(100.0, raw_cong)), 1)
                 predicted_speed = round(
                     max(0.0, min(free_flow_speed_kmh * 1.25, free_flow_speed_kmh * (1.0 - predicted_congestion / 100.0))),
@@ -259,14 +310,7 @@ class TrafficPredictor:
                 cong_delta = round(predicted_congestion - congestion_percent, 1)
                 spd_delta = round(predicted_speed - current_speed_kmh, 1)
 
-                # Determine model name and status dynamically
-                model_name = getattr(model, "model_name", None)
-                if not model_name:
-                    if self.metadata and "selected_model_by_horizon" in self.metadata:
-                        model_name = self.metadata["selected_model_by_horizon"].get(f"{horizon_minutes}m")
-                if not model_name:
-                    model_name = getattr(model, "__class__", type(model)).__name__
-
+                # Model identity and fallback reason come from the active horizon metadata.
                 is_persistence_model = (model_name == "Persistence" or isinstance(model, PersistencePredictor))
 
                 # Direction classification
@@ -314,8 +358,10 @@ class TrafficPredictor:
                     else ("Moderate Confidence" if computed_confidence >= 0.60 else "Experimental")
                 )
 
-                if is_persistence_model:
-                    model_status = "persistence_baseline"
+                if fallback_reason:
+                    model_status = "baseline_fallback"
+                elif is_persistence_model or model_name == "HistoricalAvg":
+                    model_status = "baseline_prediction"
                 else:
                     model_status = "model_prediction" if data_tier == "established" else "experimental_forecast"
 
@@ -332,10 +378,14 @@ class TrafficPredictor:
                     "direction_label": direction_label,
                     "confidence": computed_confidence,
                     "confidence_label": conf_label,
+                    "confidence_calibrated": False,
                     "horizon_minutes": horizon_minutes,
                     "data_tier": data_tier,
                     "model_status": model_status,
                     "model_name": model_name,
+                    "paired_samples": paired_samples,
+                    "fallback_reason": fallback_reason,
+                    "model_version": (self.metadata or {}).get("model_version"),
                     "trained_at": self.metadata.get("trained_at") if self.metadata else None,
                     "training_data_cutoff_timestamp": self.metadata.get("training_data_cutoff_timestamp") if self.metadata else None,
                     "model_mae": model_mae,
@@ -371,14 +421,15 @@ class TrafficPredictor:
             "direction_label": "Conditions steady (Baseline)",
             "confidence": computed_confidence,
             "confidence_label": conf_label,
+            "confidence_calibrated": False,
             "horizon_minutes": horizon_minutes,
             "data_tier": data_tier,
             "model_status": "persistence_fallback",
             "model_name": "PersistenceBaseline",
-            "explanation": (
-                f"Trained ML model unavailable for {horizon_minutes}m. "
-                f"Using Persistence Baseline (assuming conditions remain unchanged)."
-            ),
+            "paired_samples": paired_samples,
+            "fallback_reason": fallback_reason or f"No trained model is available for {horizon_minutes}m; using persistence baseline.",
+            "model_version": (self.metadata or {}).get("model_version"),
+            "explanation": fallback_reason or f"No trained model is available for {horizon_minutes}m; using persistence baseline.",
         }
 
     def predict_multi_horizon(
@@ -394,6 +445,7 @@ class TrafficPredictor:
         area: Optional[str] = None,
         sensor_confidence: Optional[float] = None,
         historical_sample_count: Optional[int] = None,
+        feature_history: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """
         Produces forecasts across 15m, 30m, and 60m horizons simultaneously.
@@ -413,6 +465,7 @@ class TrafficPredictor:
                 area=area,
                 sensor_confidence=sensor_confidence,
                 historical_sample_count=historical_sample_count,
+                feature_history=feature_history,
             )
         return outlooks
 
@@ -459,7 +512,8 @@ class TrafficPredictor:
                 pred["coordinates"] = seg.get("coordinates", [])
                 pred["distance_m"] = seg.get("distance_m", 0)
                 predicted_segments.append(pred)
-                eligible_count += 1
+                if pred.get("predicted_speed_kmh") is not None and pred.get("model_status") != "insufficient_data":
+                    eligible_count += 1
             else:
                 predicted_segments.append(
                     {

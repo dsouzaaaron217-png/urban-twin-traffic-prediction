@@ -271,7 +271,7 @@ describe('PredictionsView Component', () => {
 
     // 8. Data Pipeline Status
     expect(screen.getByText(/Cleaned Historical Dataset:/)).toBeInTheDocument();
-    expect(screen.getByText(/1083 validated records/)).toBeInTheDocument();
+    expect(screen.getByText(/1,083 cleaned observations/)).toBeInTheDocument();
   });
 
   it('allows switching forecast horizon to +30m and +60m', async () => {
@@ -280,7 +280,7 @@ describe('PredictionsView Component', () => {
       expect(screen.getAllByText('+30 Minutes').length).toBeGreaterThanOrEqual(1);
     });
 
-    const btn30 = screen.getAllByRole('button', { name: /\+30 Minutes/i })[0];
+    const btn30 = screen.getAllByRole('button', { name: /\+30 Minutes/i })[0]!;
     fireEvent.click(btn30);
 
     await waitFor(() => {
@@ -312,8 +312,11 @@ describe('PredictionsView Component', () => {
         total_observations: 7,
         has_sufficient_history: false,
         required_observations: 15,
+        history_days: 2,
+        coverage: 0.5,
+        readiness_note: 'Collecting data: 2 of 14 days',
       },
-      message: 'Insufficient historical data for Unfinished Road (7 readings available, 15 required). Accumulating data...',
+      message: 'Collecting data: 2 of 14 days',
       predictions: [],
     };
 
@@ -324,9 +327,30 @@ describe('PredictionsView Component', () => {
     await waitFor(() => {
       expect(screen.getByText(/Accumulating Historical Observations/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/7 observations recorded/)).toBeInTheDocument();
-    expect(screen.getByText(/Estimated readiness: ~40 minutes/)).toBeInTheDocument();
+    expect(screen.getByText(/7 observations · 50% coverage/)).toBeInTheDocument();
+    expect(screen.getByText(/Collecting data: 2 of 14 days/)).toBeInTheDocument();
     // Live speed is reported truthfully
     expect(screen.getByText('22 km/h')).toBeInTheDocument();
   });
+
+  it('labels a validation fallback and shows a drift warning', async () => {
+    const fallbackPrediction: PredictionResponse = {
+      ...MOCK_PREDICTION,
+      forecast: { ...MOCK_PREDICTION.forecast!, fallback_reason: 'Persistence won validation for this horizon.' },
+      outlooks: {
+        ...MOCK_PREDICTION.outlooks,
+        '15m': { ...MOCK_PREDICTION.outlooks!['15m']!, fallback_reason: 'Persistence won validation for this horizon.' },
+      },
+    };
+    vi.spyOn(api, 'getPredictions').mockResolvedValue(fallbackPrediction);
+    vi.spyOn(api, 'getModelStatus').mockResolvedValue({
+      ...MOCK_MODEL_STATUS,
+      metadata: { ...MOCK_MODEL_STATUS.metadata, drift: { status: 'alert', alert: true } },
+    });
+
+    render(<PredictionsView />);
+    expect(await screen.findByText(/Baseline forecast served/)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/Model drift alert/);
+  });
+
 });

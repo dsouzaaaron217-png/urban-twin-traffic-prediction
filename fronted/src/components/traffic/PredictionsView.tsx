@@ -160,8 +160,10 @@ export function PredictionsView() {
                  l.area.toLowerCase() === globalLocation.area.toLowerCase()
           );
           const initLoc = match || locRes.locations[0];
-          setSelectedCity(initLoc.city);
-          setSelectedArea(initLoc.area);
+          if (initLoc) {
+            setSelectedCity(initLoc.city);
+            setSelectedArea(initLoc.area);
+          }
         }
       } catch (err: any) {
         if (active) setError(err.message || 'Failed to initialize prediction service.');
@@ -314,8 +316,8 @@ export function PredictionsView() {
       points.push({
         timestamp: forecast.timestamp,
         timeLabel: `+${forecast.horizon_minutes}m (${formatTime(forecast.timestamp)})`,
-        predictedCongestion: forecast.predicted_congestion_percent,
-        predictedSpeed: forecast.predicted_speed_kmh,
+        predictedCongestion: forecast.predicted_congestion_percent ?? null,
+        predictedSpeed: forecast.predicted_speed_kmh ?? null,
         isForecast: true,
       });
     }
@@ -477,6 +479,18 @@ export function PredictionsView() {
         </div>
       </section>
 
+      {(predictionData?.forecast?.fallback_reason || predictionData?.outlooks?.[`${selectedHorizon}m`]?.fallback_reason) && (
+        <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          <strong>Baseline forecast served.</strong>{' '}
+          {predictionData?.forecast?.fallback_reason || predictionData?.outlooks?.[`${selectedHorizon}m`]?.fallback_reason}
+        </div>
+      )}
+      {modelStatus?.metadata?.drift?.alert && (
+        <div role="alert" className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+          <strong>Model drift alert.</strong> Recent verified traffic features differ from the model’s training reference.
+        </div>
+      )}
+
       {/* Stale Data Alert */}
       {isStale && (
         <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-xl p-4 flex items-start gap-3.5 shadow-sm text-amber-900 dark:text-amber-200">
@@ -509,6 +523,9 @@ export function PredictionsView() {
             <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate">Latest Observation Time</div>
             <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5 truncate">
               {formatDateTime(predictionData?.live_traffic?.timestamp || predictionData?.data_status?.latest || dataStatus?.latest_observation)}
+            </div>
+            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+              Source: {predictionData?.live_traffic?.data_source || 'source not recorded'}
             </div>
           </div>
         </div>
@@ -554,7 +571,7 @@ export function PredictionsView() {
         </section>
       )}
 
-      {/* 2. Case: Incomplete History (< 15 readings) */}
+      {/* 2. Case: History has not passed the corridor and horizon readiness gates */}
       {isInsufficientHistory && liveConditions && (
         <section className="bg-white dark:bg-card border border-amber-200 dark:border-amber-900/50 rounded-xl p-6 shadow-sm space-y-4">
           <div className="flex items-start gap-3">
@@ -566,8 +583,7 @@ export function PredictionsView() {
                 Accumulating Historical Observations
               </h2>
               <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-                TrafficWatch avoids fabricating synthetic predictions. A minimum of 15 verified observations
-                is required to establish reliable forecasting patterns. Live traffic conditions are reported directly below.
+                Forecasts require at least 14 days of verified corridor history, 80% polling coverage, and enough valid future pairs for the selected horizon. Live traffic conditions are reported directly below.
               </p>
             </div>
           </div>
@@ -577,17 +593,15 @@ export function PredictionsView() {
             <div
               className="bg-amber-500 h-full rounded-full transition-all duration-500"
               style={{
-                width: `${Math.min(100, (((predictionData?.data_status?.total_observations || 0) / 15) * 100))}%`,
+                width: `${Math.min(100, ((predictionData?.data_status?.coverage ?? 0) * 100))}%`,
               }}
             />
           </div>
 
           <div className="flex flex-col sm:flex-row justify-between text-xs text-slate-600 dark:text-slate-400 gap-1">
-            <span>{predictionData?.data_status?.total_observations || 0} observations recorded</span>
+            <span>{predictionData?.data_status?.total_observations ?? 0} observations · {predictionData?.data_status?.coverage != null ? `${Math.round(predictionData.data_status.coverage * 100)}% coverage` : 'coverage unavailable'}</span>
             <span className="font-medium text-slate-800 dark:text-slate-200">
-              {predictionData?.data_status?.is_monitored === false
-                ? (predictionData?.data_status?.readiness_note || 'Unmonitored corridor — add to Monitored Locations to accumulate automated 5-minute readings')
-                : `Estimated readiness: ~${predictionData?.data_status?.estimated_readiness_minutes ?? Math.max(0, 15 - (predictionData?.data_status?.total_observations || 0)) * 5} minutes`}
+              {predictionData?.data_status?.readiness_note || predictionData?.message || `Collecting data: ${predictionData?.data_status?.history_days ?? 0} of 14 days`}
             </span>
           </div>
 
@@ -648,7 +662,9 @@ export function PredictionsView() {
             {/* Confidence indicator */}
             <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">
               <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span>{activeOutlook.confidence_label || 'High Confidence'} ({Math.round((activeOutlook.confidence || 0.85) * 100)}%)</span>
+              <span title="Heuristic sensor/history score; prediction confidence has not been calibrated.">
+                Heuristic · not calibrated ({activeOutlook.confidence_label || 'Unavailable'} · {Math.round((activeOutlook.confidence ?? 0) * 100)}%)
+              </span>
             </div>
           </div>
 
@@ -1092,7 +1108,7 @@ export function PredictionsView() {
                         </span>
                       ) : (
                         <span className="text-[11px] text-amber-700 dark:text-amber-400 flex items-center gap-1 font-medium">
-                          <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" /> Insufficient data ({r.observation_count}/15)
+                          <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" /> {r.readiness_message || 'Insufficient verified history'}
                         </span>
                       )}
                     </td>
@@ -1157,22 +1173,32 @@ export function PredictionsView() {
                   Active Algorithm (+{selectedHorizon}m)
                 </div>
                 <div className="text-sm font-bold text-slate-900 dark:text-white mt-1">
-                  {modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`] === 'Persistence'
-                    ? 'Persistence Baseline'
-                    : (modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`] || predictionData?.model_name || 'Persistence Baseline')}
+                  {(() => {
+                    const name = modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`] || predictionData?.model_info?.model_name;
+                    return name === 'Persistence' ? 'Persistence Baseline' : (name || 'No verified model');
+                  })()}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
-                  {modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`] === 'Persistence'
-                    ? 'Zero-delta baseline (maintains steady corridor flow)'
-                    : 'Residual regression delta predictor'}
+                  {(() => {
+                    const name = modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`];
+                    return name === 'Persistence'
+                      ? 'Last observed congestion baseline'
+                      : name === 'HistoricalAvg'
+                        ? 'Train-only city, corridor, and local-hour average'
+                        : name
+                          ? 'Gradient-boosted residual forecast selected on validation'
+                          : 'No verified evaluation is available for this horizon';
+                  })()}
                 </div>
               </div>
               <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5">
                 <div className="text-xs text-slate-500 dark:text-slate-400">Training Dataset Volume</div>
                 <div className="text-sm font-bold text-slate-900 dark:text-white mt-1">
-                  {modelStatus?.metadata?.total_dataset_rows || dataStatus?.total_cleaned_rows || 1304} validated records
+                  {(modelStatus?.metadata?.total_dataset_rows ?? 0).toLocaleString()} verified records
                 </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Strict chronological split with 60m embargo</div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  {predictionData?.model_info?.paired_samples ?? predictionData?.data_status?.paired_samples ?? 0} paired samples for this corridor and horizon
+                </div>
               </div>
               <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5">
                 <div className="text-xs text-slate-500 dark:text-slate-400">Model Training Cutoff</div>
@@ -1210,24 +1236,26 @@ export function PredictionsView() {
                     {[15, 30, 60].map(h => {
                       const meta = modelStatus?.metadata?.evaluation_by_horizon?.[`${h}m`];
                       const tm = meta?.test_metrics;
-                      const selectedName = meta?.selected_model_name || 'Persistence';
-                      const pMae = tm?.Persistence?.mae_percent ?? meta?.persistence_baseline?.mae_percent;
-                      const pRmse = tm?.Persistence?.rmse_percent ?? meta?.persistence_baseline?.rmse_percent;
-                      const rfMae = tm?.RandomForest?.mae_percent ?? meta?.model_metrics?.mae_percent;
-                      const rfRmse = tm?.RandomForest?.rmse_percent ?? meta?.model_metrics?.rmse_percent;
-                      const hgbMae = tm?.HistGradientBoosting?.mae_percent;
-                      const hgbRmse = tm?.HistGradientBoosting?.rmse_percent;
-                      const haMae = tm?.HistoricalAvg?.mae_percent ?? meta?.historical_avg_baseline?.mae_percent;
-                      const haRmse = tm?.HistoricalAvg?.rmse_percent ?? meta?.historical_avg_baseline?.rmse_percent;
+                      const selectedName = meta?.selected_model_name || modelStatus?.metadata?.selected_model_by_horizon?.[`${h}m`];
+                      const pMae = tm?.['Persistence']?.mae_percent ?? meta?.persistence_baseline?.mae_percent;
+                      const pRmse = tm?.['Persistence']?.rmse_percent ?? meta?.persistence_baseline?.rmse_percent;
+                      const rfMae = tm?.['RandomForest']?.mae_percent ?? meta?.model_metrics?.mae_percent;
+                      const rfRmse = tm?.['RandomForest']?.rmse_percent ?? meta?.model_metrics?.rmse_percent;
+                      const hgbMae = tm?.['HistGradientBoosting']?.mae_percent;
+                      const hgbRmse = tm?.['HistGradientBoosting']?.rmse_percent;
+                      const haMae = tm?.['HistoricalAvg']?.mae_percent ?? meta?.historical_avg_baseline?.mae_percent;
+                      const haRmse = tm?.['HistoricalAvg']?.rmse_percent ?? meta?.historical_avg_baseline?.rmse_percent;
 
                       return (
                         <tr key={h} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                           <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">+{h} Minutes</td>
                           <td className="py-2.5 px-3">
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                              <CheckCircle2 className="w-3 h-3" />
-                              {selectedName === 'Persistence' ? 'Persistence Baseline' : selectedName}
-                            </span>
+                            {meta?.supported && selectedName ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                                <CheckCircle2 className="w-3 h-3" />
+                                {selectedName === 'Persistence' ? 'Persistence Baseline' : selectedName}
+                              </span>
+                            ) : <span className="text-slate-500">Not evaluated</span>}
                           </td>
                           <td className="py-2.5 px-3 font-medium text-emerald-700 dark:text-emerald-400">
                             {pMae !== undefined ? `${pMae}% (${pRmse}%)` : '--'}
@@ -1243,7 +1271,7 @@ export function PredictionsView() {
                           </td>
                           <td className="py-2.5 px-3">
                             <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                              {meta?.selection_rationale || 'Selected for lowest test and validation error'}
+                              {meta?.selection_rationale || 'No verified evaluation is available for this horizon.'}
                             </span>
                           </td>
                         </tr>
@@ -1260,13 +1288,13 @@ export function PredictionsView() {
                 <Info className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" /> Operational Boundaries & Integrity Disclosures
               </div>
               <p>
-                • <strong>Autonomous Model Selection</strong>: In accordance with production ML guidelines, TrafficWatch benchmarks Persistence, Random Forest, HistGradientBoosting, Ridge, and Historical Average on strict chronological splits with embargo gaps. For all horizons (+15m, +30m, +60m), the Persistence Baseline demonstrated superior generalization (lowest MAE and RMSE on held-out test data) because corridor traffic exhibits strong autocorrelation during continuous flow. Rather than deploying an inferior ML model, Persistence is actively served in production.
+                • <strong>Model Selection</strong>: Each horizon selects a model only when its validation MAE beats the best baseline. The held-out chronological test set is reported separately and is not used for model selection. When a baseline is served, the reason is shown with the forecast.
               </p>
               <p>
                 • <strong>Dynamic Live Inference</strong>: Appending new traffic records to the dataset immediately updates live prediction inputs via an mtime-invalidated memory cache without triggering costly retraining on every request or frontend refresh.
               </p>
               <p>
-                • <strong>Minimum Data Threshold</strong>: At least 15 verified historical observations on any individual road segment are required before forecasts activate, preventing spurious forecasts on unmonitored roads.
+                • <strong>Readiness Gate</strong>: A corridor needs at least 14 days of verified history and 80% polling coverage, plus horizon-specific future pairs. Missing readings are not filled.
               </p>
             </div>
           </div>
@@ -1280,17 +1308,17 @@ export function PredictionsView() {
           <span>
             Cleaned Historical Dataset:{' '}
             <strong className="text-slate-900 dark:text-white font-semibold">
-              {dataStatus?.total_cleaned_rows || 1219} validated records
+              {(dataStatus?.total_cleaned_rows ?? 0).toLocaleString()} cleaned observations
             </strong>{' '}
-            ({dataStatus?.time_span_hours || 75} hours covered)
+            ({dataStatus?.time_span_hours ?? 0} hours covered)
           </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-4 text-slate-500 dark:text-slate-400">
-          <span>Duplicates Removed: {dataStatus?.exact_duplicates_removed || 14} exact, {dataStatus?.logical_duplicates_removed || 175} logical</span>
-          <span>Conflicts Handled: {dataStatus?.conflicts_resolved || 42}</span>
+          <span>Duplicates Removed: {dataStatus?.exact_duplicates_removed ?? 0} exact, {dataStatus?.logical_duplicates_removed ?? 0} logical</span>
+          <span>Conflicts Handled: {dataStatus?.conflicts_resolved ?? 0}</span>
           <span className="text-emerald-700 dark:text-emerald-400 font-medium">
-            Freshness: {dataStatus?.freshness || 'Fresh (< 5m)'}
+            Freshness: {dataStatus?.freshness || 'Unavailable'}
           </span>
         </div>
       </section>

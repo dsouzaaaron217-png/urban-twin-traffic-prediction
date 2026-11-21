@@ -67,7 +67,8 @@ def test_prediction_locations_endpoint(client):
     assert "area" in loc0
     assert "observation_count" in loc0
     assert "has_sufficient_history" in loc0
-    assert loc0["has_sufficient_history"] == (loc0["observation_count"] >= 15)
+    assert loc0["has_sufficient_history"] == (loc0["readiness_message"] == "Forecast ready")
+    assert 0.0 <= loc0["coverage"] <= 1.0
 
 
 def test_roads_outlook_endpoint(client):
@@ -97,16 +98,19 @@ def test_prediction_data_status_endpoint(client):
 
 
 def test_model_status_endpoint(client):
-    """Verifies /api/model/status exposes evaluation metrics and baseline comparisons."""
+    """Unverified legacy metrics are hidden until a Phase 2 verified run exists."""
     res = client.get("/api/model/status")
     assert res.status_code == 200
     data = res.json()
-    assert data["is_available"] is True
     meta = data["metadata"]
-    assert meta["model_name"] in ["Persistence", "RandomForestRegressor", "HistGradientBoosting", "Ridge"]
-    assert "supported_horizons" in meta
-    assert set(meta["supported_horizons"]) == {15, 30, 60}
-    assert "evaluation_by_horizon" in meta
+    assert "is_available" in data
+    assert "drift" in data
+    if not data["is_available"]:
+        assert meta["status"] == "legacy_unverified"
+        assert meta["evaluation_by_horizon"] == {}
+    else:
+        assert meta["data_provenance_status"] == "verified"
+        assert meta["supported_horizons"]
 
 
 # =====================================================================

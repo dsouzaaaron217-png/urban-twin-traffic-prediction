@@ -93,9 +93,15 @@ export interface Forecast {
   horizon_minutes?: number;
   confidence?: number;
   confidence_label?: string;
+  confidence_calibrated?: boolean;
   data_tier?: 'established' | 'experimental' | 'insufficient' | string;
   model_status?: string;
   model_name?: string;
+  model_version?: string;
+  fallback_reason?: string | null;
+  paired_samples?: number | null;
+  data_source?: string;
+  latest_observation_at?: string;
   explanation?: string;
 }
 
@@ -106,6 +112,9 @@ export interface PredictionLocation {
   longitude: number;
   observation_count: number;
   has_sufficient_history: boolean;
+  coverage?: number;
+  history_days?: number;
+  readiness_message?: string;
   latest_congestion?: number | null;
   latest_speed?: number | null;
   latest_timestamp?: string;
@@ -134,6 +143,10 @@ export interface RoadOutlookItem {
   observation_count: number;
   has_sufficient_history: boolean;
   forecast_available: boolean;
+  readiness_message?: string;
+  paired_samples?: number;
+  model_name?: string;
+  fallback_reason?: string | null;
 }
 
 export interface RoadsOutlookResponse {
@@ -186,16 +199,22 @@ export interface ModelHorizonEvaluation {
   selected_model_name?: string;
   selected_algorithm?: string;
   selection_rationale?: string;
+  fallback_reason?: string | null;
+  skill_score_vs_best_baseline?: number;
+  best_baseline_name?: string;
   total_pairs?: number;
   train_samples?: number;
   val_samples?: number;
   test_samples?: number;
   validation_metrics?: Record<string, { mae_percent: number; rmse_percent: number; mape?: number }>;
   test_metrics?: Record<string, { mae_percent: number; rmse_percent: number; mape?: number }>;
-  model_metrics?: { mae_percent: number; rmse_percent: number; mape: number };
-  persistence_baseline?: { mae_percent: number; rmse_percent: number; mape: number };
-  historical_avg_baseline?: { mae_percent: number; rmse_percent: number; mape: number };
-  random_forest_metrics?: { mae_percent: number; rmse_percent: number; mape: number };
+  model_metrics?: { mae_percent: number; rmse_percent: number; mape: number; congestion_macro_f1?: number };
+  persistence_baseline?: { mae_percent: number; rmse_percent: number; mape: number; congestion_macro_f1?: number };
+  historical_avg_baseline?: { mae_percent: number; rmse_percent: number; mape: number; congestion_macro_f1?: number };
+  random_forest_metrics?: { mae_percent: number; rmse_percent: number; mape: number; congestion_macro_f1?: number };
+  per_corridor_metrics?: Array<Record<string, unknown>>;
+  peak_off_peak_metrics?: Record<string, unknown>;
+  rolling_origin_cv?: Array<Record<string, unknown>>;
   beats_baseline_mae?: boolean;
   beats_baseline_rmse?: boolean;
   feature_importances?: Record<string, number>;
@@ -214,6 +233,11 @@ export interface ModelStatusResponse {
     total_dataset_rows?: number;
     supported_horizons?: number[];
     feature_columns?: string[];
+    model_version?: string;
+    previous_version?: string | null;
+    training_range?: [string | null, string | null];
+    drift?: { status: string; alert: boolean; message?: string; shifted_features?: Record<string, number> };
+    registry_summary?: { active_version?: string; previous_version?: string | null; registered_versions?: number };
     evaluation_by_horizon?: Record<string, ModelHorizonEvaluation>;
     metrics?: any;
     limitations?: string[];
@@ -241,6 +265,7 @@ export interface PredictionResponse {
     is_stale?: boolean;
     data_age_minutes?: number;
     freshness?: string;
+    data_source?: string;
   } | null;
   forecast?: (Forecast & {
     is_stale?: boolean;
@@ -261,12 +286,20 @@ export interface PredictionResponse {
     supported_horizons: number[];
     model_mae?: number;
     model_rmse?: number;
+    model_version?: string;
+    fallback_reason?: string | null;
+    paired_samples?: number | null;
     evaluation?: any;
     baseline_comparison?: any;
   };
   data_status?: {
     total_observations: number;
     has_sufficient_history: boolean;
+    paired_samples?: number | null;
+    coverage?: number;
+    history_days?: number;
+    readiness_message?: string;
+    data_source?: string;
     required_observations?: number;
     is_monitored?: boolean;
     estimated_readiness_minutes?: number | null;

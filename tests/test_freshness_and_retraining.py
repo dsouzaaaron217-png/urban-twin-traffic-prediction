@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from main import app, get_traffic_dataset, invalidate_traffic_cache
 from ml.predict import get_predictor
+from ml.data_prep import FEATURE_COLUMNS
 from services.data_pipeline import clean_historical_dataset
 
 
@@ -178,67 +179,26 @@ def test_6_edge_cases(client):
 
 
 def test_7_feature_schema_consistency():
-    """
-    7. Confirm that the feature schema remains identical across training,
-       inference, and new incoming data.
-    """
+    """Inference and training share the canonical feature schema."""
     predictor = get_predictor()
-    expected_features = [
-        "current_congestion_percent",
-        "current_speed_kmh",
-        "free_flow_speed_kmh",
-        "speed_ratio",
-        "free_flow_gap",
-        "hour",
-        "dayofweek",
-        "is_weekend",
-        "sin_hour",
-        "cos_hour",
-        "sin_dow",
-        "cos_dow",
-        "prior_congestion",
-        "prior_speed",
-        "cong_trend",
-        "speed_trend",
-    ]
-    # Check that metadata has the exact same features
-    meta_features = predictor.metadata.get("feature_columns", [])
-    assert meta_features == expected_features
+    assert FEATURE_COLUMNS
+    assert len(FEATURE_COLUMNS) == len(set(FEATURE_COLUMNS))
+    # Legacy unverified metadata is deliberately hidden and never used for inference.
+    if predictor.metadata.get("status") == "legacy_unverified":
+        assert predictor.metadata.get("evaluation_by_horizon") == {}
+    else:
+        assert predictor.metadata.get("feature_columns") == FEATURE_COLUMNS
 
 
-def test_8_metrics_compared_on_identical_chronological_test_samples():
-    """
-    8. Verify that reported test metrics are compared against the persistence baseline
-       on the exact same chronological held-out test samples.
-    """
+def test_8_unverified_legacy_metrics_are_not_reported_as_active():
+    """Old metrics without provenance must not be presented as verified accuracy."""
     predictor = get_predictor()
     meta = predictor.metadata
-    eval_by_h = meta.get("evaluation_by_horizon", {})
-
-    for h in [15, 30, 60]:
-        h_key = f"{h}m"
-        assert h_key in eval_by_h
-        h_eval = eval_by_h[h_key]
-
-        # Samples counts must be defined and positive
-        assert h_eval["train_samples"] > 0
-        assert h_eval["val_samples"] > 0
-        assert h_eval["test_samples"] > 0
-
-        # Cutoff timestamp matches train boundary
-        assert "training_data_cutoff_timestamp" in h_eval
-        assert "test_metrics" in h_eval
-
-        # Check candidate test metrics are present
-        tm = h_eval["test_metrics"]
-        assert "Persistence" in tm
-        assert "RandomForest" in tm
-        assert "HistGradientBoosting" in tm
-
-        # Persistence achieved lowest error on test partition
-        p_mae = tm["Persistence"]["mae_percent"]
-        rf_mae = tm["RandomForest"]["mae_percent"]
-        assert p_mae < rf_mae, f"At {h}m, persistence test MAE ({p_mae}) should be lower than RF ({rf_mae})"
+    assert meta.get("data_provenance_status") in {"unverified", "verified"}
+    if meta.get("data_provenance_status") == "unverified":
+        assert meta.get("status") == "legacy_unverified"
+        assert meta.get("evaluation_by_horizon") == {}
+        assert predictor.models == {}
 
 
 def test_9_refresh_does_not_trigger_retraining(client):

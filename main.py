@@ -61,6 +61,8 @@ TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY")
 ENABLE_TOMTOM_SCHEDULER = (
     os.getenv("ENABLE_TOMTOM_SCHEDULER", "false").lower() == "true"
 )
+ENABLE_MODEL_RETRAINING = os.getenv("ENABLE_MODEL_RETRAINING", "false").lower() == "true"
+MODEL_RETRAIN_INTERVAL_HOURS = max(1, int(os.getenv("MODEL_RETRAIN_INTERVAL_HOURS", "24")))
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -318,6 +320,30 @@ def collect_traffic_automatically():
 
 
 
+def scheduled_model_retraining():
+    """Run only when explicitly enabled; blocked training never replaces the active model."""
+    try:
+        from ml.train import train_pipeline
+        result = train_pipeline()
+        if result.get("status") == "blocked":
+            print(f"Scheduled model retraining blocked: {result.get('reason')}")
+            return result
+        get_predictor(force_reload=True)
+        return result
+    except Exception as exc:
+        print(f"Scheduled model retraining failed: {exc}")
+        return {"status": "failed", "reason": str(exc)}
+
+
+def scheduled_model_drift_check():
+    """Log an alert when verified observations drift from the active training reference."""
+    from ml.train import get_drift_status
+    status = get_drift_status()
+    if status.get("alert"):
+        print(f"MODEL DRIFT ALERT: {status}")
+    return status
+
+
 # -----------------------------
 # Scheduler lifecycle
 # -----------------------------
@@ -327,30 +353,35 @@ async def lifespan(app: FastAPI):
     recovered_runs = recover_interrupted_runs()
     if recovered_runs:
         print(f"Recovered {recovered_runs} interrupted ingestion run(s).")
+    jobs_added = False
     if ENABLE_TOMTOM_SCHEDULER and TOMTOM_API_KEY:
         print("TomTom automatic collection: ENABLED")
-
         scheduler.add_job(
-            collect_traffic_automatically,
-            trigger="date",
-            id="initial_traffic_collection",
+            collect_traffic_automatically, trigger="date", id="initial_traffic_collection",
             replace_existing=True,
         )
-
         scheduler.add_job(
-            collect_traffic_automatically,
-            trigger="interval",
-            minutes=15,
-            id="traffic_collection",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
+            collect_traffic_automatically, trigger="interval", minutes=15,
+            id="traffic_collection", replace_existing=True, max_instances=1, coalesce=True,
         )
-
-        scheduler.start()
+        jobs_added = True
     else:
         print("TomTom automatic collection: DISABLED")
-
+    if ENABLE_MODEL_RETRAINING:
+        scheduler.add_job(
+            scheduled_model_retraining, trigger="interval", hours=MODEL_RETRAIN_INTERVAL_HOURS,
+            id="model_retraining", replace_existing=True, max_instances=1, coalesce=True,
+        )
+        scheduler.add_job(
+            scheduled_model_drift_check, trigger="interval", hours=24,
+            id="model_drift_check", replace_existing=True, max_instances=1, coalesce=True,
+        )
+        jobs_added = True
+        print(f"Scheduled model retraining: ENABLED (every {MODEL_RETRAIN_INTERVAL_HOURS} hours)")
+    else:
+        print("Scheduled model retraining: DISABLED")
+    if jobs_added:
+        scheduler.start()
     try:
         yield
     finally:
@@ -1535,6 +1566,15 @@ def get_traffic_predictions(
 
     # Load cleaned historical dataset using mtime cache
     df = get_traffic_dataset()
+    feature_history = None
+    try:
+        from ml.data_prep import load_verified_phase1_dataset
+        verified_history = load_verified_phase1_dataset()
+        if not verified_history.empty:
+            df = verified_history
+            feature_history = verified_history
+    except Exception as exc:
+        print(f"Verified prediction history unavailable: {exc}")
 
     # Resolve location identity and historical subset
     loc_subset = None
@@ -1678,6 +1718,7 @@ def get_traffic_predictions(
         "congestion_percent": round(congestion, 1) if congestion is not None else None,
         "traffic_condition": traffic_condition,
         "confidence": confidence,
+        "data_source": (str(loc_subset.iloc[-1].get("source")) if loc_subset is not None and not loc_subset.empty and pd.notna(loc_subset.iloc[-1].get("source")) else ("legacy_cleaned_dataset_unverified" if loc_subset is not None and not loc_subset.empty else "tomtom_live_unstored")),
         "is_stale": is_stale,
         "data_age_minutes": data_age_minutes,
         "freshness": freshness_status,
@@ -1771,6 +1812,12 @@ def get_traffic_predictions(
         area=resolved_area,
         sensor_confidence=confidence,
         historical_sample_count=observation_count,
+        feature_history=feature_history,
+    )
+
+    horizon_forecast_available = (
+        pred_res.get("predicted_congestion_percent") is not None
+        and pred_res.get("model_status") != "insufficient_data"
     )
 
     # Predict all horizons for outlook cards
@@ -1785,6 +1832,7 @@ def get_traffic_predictions(
         area=resolved_area,
         sensor_confidence=confidence,
         historical_sample_count=observation_count,
+        feature_history=feature_history,
     )
 
     now = datetime.now().astimezone()
@@ -1800,10 +1848,16 @@ def get_traffic_predictions(
         "direction_label": pred_res.get("direction_label", "Conditions steady"),
         "horizon_minutes": horizon_minutes,
         "confidence": pred_res.get("confidence", 0.85),
-        "confidence_label": pred_res.get("confidence_label", "Moderate Confidence"),
+        "confidence_label": pred_res.get("confidence_label", "Unavailable"),
+        "confidence_calibrated": pred_res.get("confidence_calibrated", False),
         "data_tier": pred_res.get("data_tier", "established"),
         "model_status": pred_res.get("model_status", "model_prediction"),
         "model_name": pred_res.get("model_name", "Persistence"),
+        "fallback_reason": pred_res.get("fallback_reason"),
+        "model_version": pred_res.get("model_version"),
+        "paired_samples": pred_res.get("paired_samples"),
+        "data_source": live_traffic_info.get("data_source"),
+        "latest_observation_at": live_traffic_info.get("timestamp"),
         "is_stale": is_stale,
         "data_age_minutes": data_age_minutes,
     }
@@ -1815,6 +1869,8 @@ def get_traffic_predictions(
 
     model_info = {
         "model_name": pred_res.get("model_name", "Persistence"),
+        "model_version": pred_res.get("model_version"),
+        "fallback_reason": pred_res.get("fallback_reason"),
         "trained_at": predictor.metadata.get("trained_at") if predictor.metadata else None,
         "training_data_cutoff_timestamp": predictor.metadata.get("training_data_cutoff_timestamp") if predictor.metadata else None,
         "horizon_minutes": horizon_minutes,
@@ -1822,25 +1878,30 @@ def get_traffic_predictions(
         "model_mae": pred_res.get("model_mae"),
         "model_rmse": pred_res.get("model_rmse"),
         "evaluation": horizon_metrics.get("model_metrics"),
-        "baseline_comparison": horizon_metrics.get("persistence_baseline"),
+        "baseline_comparison": horizon_metrics.get("best_baseline_metrics"),
+        "best_baseline_name": horizon_metrics.get("best_baseline_name"),
     }
 
     data_status = {
         "total_observations": observation_count,
-        "has_sufficient_history": True,
+        "has_sufficient_history": horizon_forecast_available,
+        "paired_samples": pred_res.get("paired_samples"),
+        "data_source": live_traffic_info.get("data_source"),
         "is_monitored": is_monitored,
         "estimated_readiness_minutes": estimated_readiness_min,
         "readiness_note": readiness_note,
         "earliest": loc_subset["timestamp"].min() if loc_subset is not None and not loc_subset.empty else None,
         "latest": loc_subset["timestamp"].max() if loc_subset is not None and not loc_subset.empty else None,
+        "data_source": live_traffic_info.get("data_source"),
         "is_stale": is_stale,
         "data_age_minutes": data_age_minutes,
         "freshness": freshness_status,
     }
 
     return {
-        "forecast_available": True,
+        "forecast_available": horizon_forecast_available,
         "data_available": True,
+        "message": None if horizon_forecast_available else pred_res.get("explanation", "Insufficient paired history for this horizon."),
         "location": location_info,
         "live_traffic": live_traffic_info,
         "forecast": forecast_info,
@@ -1850,7 +1911,7 @@ def get_traffic_predictions(
         "data_status": data_status,
         "explanation": pred_res.get("explanation"),
         # Legacy backwards compatibility
-        "predictions": [forecast_info],
+        "predictions": [forecast_info] if horizon_forecast_available else [],
         "model_name": model_info["model_name"],
         "model_status": forecast_info["model_status"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1869,19 +1930,25 @@ def get_prediction_locations():
         return {"locations": [], "total_locations": 0}
 
     try:
+        readiness_rows = get_phase1_readiness().get("corridors", [])
+        readiness_by_key = {(str(row["city"]).casefold(), str(row["area"]).casefold()): row for row in readiness_rows}
         locations_list = []
         for (city, area), grp in df.groupby(["city", "area"]):
             cnt = len(grp)
             last_row = grp.iloc[-1]
             first_row = grp.iloc[0]
 
+            corridor_state = readiness_by_key.get((str(city).casefold(), str(area).casefold()), {})
             locations_list.append({
                 "city": city,
                 "area": area,
                 "latitude": round(float(last_row["latitude"]), 4),
                 "longitude": round(float(last_row["longitude"]), 4),
                 "observation_count": cnt,
-                "has_sufficient_history": cnt >= 15,
+                "has_sufficient_history": bool(corridor_state.get("ready", False)),
+                "coverage": corridor_state.get("coverage", 0),
+                "history_days": corridor_state.get("history_days", 0),
+                "readiness_message": corridor_state.get("message", "Collecting data: 0 of 14 days"),
                 "latest_congestion": round(float(last_row["congestion_percent"]), 1) if "congestion_percent" in last_row else None,
                 "latest_speed": round(float(last_row["current_speed_kmh"]), 1) if "current_speed_kmh" in last_row else None,
                 "latest_timestamp": str(last_row["timestamp"]),
@@ -1920,9 +1987,18 @@ def get_roads_outlook(
         predictor.load()
 
     df = get_traffic_dataset()
+    try:
+        from ml.data_prep import load_verified_phase1_dataset
+        verified_history = load_verified_phase1_dataset()
+        if not verified_history.empty:
+            df = verified_history
+    except Exception as exc:
+        print(f"Verified road-outlook history unavailable: {exc}")
     if df is None or df.empty:
         return {"roads": [], "total_roads": 0, "horizon_minutes": horizon_minutes}
 
+    readiness_rows = get_phase1_readiness().get("corridors", [])
+    readiness_by_key = {(str(row["city"]).casefold(), str(row["area"]).casefold()): row for row in readiness_rows}
     try:
         roads = []
         for (c, a), grp in df.groupby(["city", "area"]):
@@ -1935,7 +2011,8 @@ def get_roads_outlook(
             ff_speed = float(last_row["free_flow_speed_kmh"])
             cur_cong = float(last_row["congestion_percent"])
 
-            if cnt >= 15:
+            corridor_state = readiness_by_key.get((str(c).casefold(), str(a).casefold()), {})
+            if cnt >= 15 and corridor_state.get("ready", False):
                 prior_speed = float(grp.iloc[-2]["current_speed_kmh"]) if cnt >= 2 else cur_speed
                 prior_cong = float(grp.iloc[-2]["congestion_percent"]) if cnt >= 2 else cur_cong
 
@@ -1950,6 +2027,7 @@ def get_roads_outlook(
                     city=c,
                     area=a,
                     historical_sample_count=cnt,
+                    feature_history=df,
                 )
 
                 is_forecast_avail = pred.get("predicted_congestion_percent") is not None and pred.get("model_status") != "insufficient_data"
@@ -1969,8 +2047,12 @@ def get_roads_outlook(
                     "direction": pred.get("direction", "stable"),
                     "direction_label": pred.get("direction_label"),
                     "observation_count": cnt,
-                    "has_sufficient_history": True,
+                    "has_sufficient_history": is_forecast_avail,
                     "forecast_available": is_forecast_avail,
+                    "paired_samples": pred.get("paired_samples"),
+                    "model_name": pred.get("model_name"),
+                    "fallback_reason": pred.get("fallback_reason"),
+                    "readiness_message": corridor_state.get("message"),
                 })
             else:
                 roads.append({
@@ -1986,10 +2068,11 @@ def get_roads_outlook(
                     "predicted_speed_kmh": None,
                     "speed_delta": 0.0,
                     "direction": "insufficient_history",
-                    "direction_label": f"Accumulating ({cnt}/15)",
+                    "direction_label": corridor_state.get("message", "Insufficient history for this horizon"),
                     "observation_count": cnt,
                     "has_sufficient_history": False,
                     "forecast_available": False,
+                    "readiness_message": corridor_state.get("message", "Collecting data: 0 of 14 days"),
                 })
 
         # Apply sorting
@@ -2060,9 +2143,16 @@ def get_model_status():
     predictor = get_predictor()
     if not predictor.is_available:
         predictor.load()
+    metadata = predictor.metadata or {}
+    from ml.train import get_drift_status
+    drift = get_drift_status()
+    metadata = {**metadata, "drift": drift}
     return {
         "is_available": predictor.is_available,
-        "metadata": predictor.metadata,
+        "metadata": metadata,
+        "model_version": metadata.get("model_version"),
+        "drift": drift,
+        "registry": metadata.get("registry_summary"),
     }
 
 
@@ -2126,12 +2216,26 @@ def trigger_model_retraining():
     """
     from ml.train import train_pipeline
     metadata = train_pipeline()
-    predictor = get_predictor(force_reload=True)
+    if metadata.get("status") == "blocked":
+        return {"success": False, "message": metadata.get("reason"), "metadata": metadata}
+    get_predictor(force_reload=True)
     return {
         "success": True,
-        "message": "Model retraining and multi-horizon validation completed successfully.",
+        "message": "Model retraining and evaluation completed.",
         "metadata": metadata,
     }
+
+
+@app.post("/api/model/rollback")
+def rollback_model(version: Optional[str] = Query(default=None)):
+    """Activate a previously registered model version; omitted version selects the previous active one."""
+    from ml.train import rollback_model_version
+    try:
+        metadata = rollback_model_version(version=version)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    get_predictor(force_reload=True)
+    return {"success": True, "message": "Model version rolled back.", "metadata": metadata}
 
 
 if __name__ == "__main__":
