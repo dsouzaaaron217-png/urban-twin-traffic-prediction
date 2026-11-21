@@ -779,15 +779,28 @@ def forecast_actuals(city: str | None = None, area: str | None = None,
 
 
 @app.get("/api/search-location")
-def search_location(q: str = Query(..., min_length=1, max_length=100)):
+def search_location(
+    q: str = Query(..., min_length=1, max_length=100),
+    city: Optional[str] = Query(default=None, min_length=1, max_length=100),
+):
     cleaned_q = q.strip()
+    scoped_city = city.strip() if city else None
     if not cleaned_q:
         return {"locations": []}
+
+    def normalized_city(value: str) -> str:
+        normalized = " ".join(value.casefold().split())
+        return {"bengaluru": "bangalore", "mangaluru": "mangalore"}.get(normalized, normalized)
+
+    def is_in_scope(result_city: str) -> bool:
+        return not scoped_city or normalized_city(result_city) == normalized_city(scoped_city)
+
+    provider_query = f"{cleaned_q}, {scoped_city}" if scoped_city and normalized_city(scoped_city) not in normalized_city(cleaned_q) else cleaned_q
 
     # 1. Try TomTom Search API if key is available and query length >= 2
     if TOMTOM_API_KEY and len(cleaned_q) >= 2:
         try:
-            tomtom_url = f"https://api.tomtom.com/search/2/search/{requests.utils.quote(cleaned_q)}.json"
+            tomtom_url = f"https://api.tomtom.com/search/2/search/{requests.utils.quote(provider_query)}.json"
             tomtom_resp = tomtom_get("search", 
                 tomtom_url,
                 params={
@@ -819,6 +832,8 @@ def search_location(q: str = Query(..., min_length=1, max_length=100)):
                             or address.get("countrySubdivision")
                             or ""
                         )
+                        if not is_in_scope(city):
+                            continue
                         area = (
                             poi_name
                             or address.get("municipalitySubdivision")
@@ -844,7 +859,7 @@ def search_location(q: str = Query(..., min_length=1, max_length=100)):
         response = requests.get(
             url,
             params={
-                "q": cleaned_q,
+                "q": provider_query,
                 "countrycodes": "in",
                 "format": "jsonv2",
                 "limit": 5,
@@ -865,16 +880,19 @@ def search_location(q: str = Query(..., min_length=1, max_length=100)):
         locations = []
         for item in results:
             address = item.get("address", {})
+            result_city = (
+                address.get("city")
+                or address.get("town")
+                or address.get("municipality")
+                or address.get("village")
+                or address.get("county")
+                or ""
+            )
+            if not is_in_scope(result_city):
+                continue
             locations.append({
                 "name": item.get("display_name", ""),
-                "city": (
-                    address.get("city")
-                    or address.get("town")
-                    or address.get("municipality")
-                    or address.get("village")
-                    or address.get("county")
-                    or ""
-                ),
+                "city": result_city,
                 "area": (
                     address.get("suburb")
                     or address.get("neighbourhood")

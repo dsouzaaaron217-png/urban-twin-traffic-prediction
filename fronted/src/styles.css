@@ -6,7 +6,7 @@
   --font-sans: 'Inter', 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --color-background: var(--background); --color-foreground: var(--foreground); --color-card: var(--card); --color-card-foreground: var(--foreground); --color-popover: var(--card); --color-popover-foreground: var(--foreground); --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground); --color-secondary: var(--secondary); --color-secondary-foreground: var(--foreground); --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground); --color-accent: var(--accent); --color-accent-foreground: var(--foreground); --color-destructive: var(--destructive); --color-border: var(--border); --color-input: var(--border); --color-ring: var(--primary); --color-success: var(--success); --color-warning: var(--warning); --color-sidebar: var(--sidebar); --radius-md: 6px; --radius-lg: 8px;
 }
-:root { --background: oklch(.975 .003 250); --foreground: oklch(.24 .025 255); --card: oklch(1 0 0); --primary: oklch(.55 .17 257); --primary-foreground: oklch(1 0 0); --secondary: oklch(.95 .01 250); --muted: oklch(.96 .005 250); --muted-foreground: oklch(.50 .024 255); --accent: oklch(.94 .02 250); --border: oklch(.91 .01 250); --destructive: oklch(.59 .2 26); --success: oklch(.57 .14 160); --warning: oklch(.7 .15 70); --sidebar: oklch(.205 .035 257); --sidebar-text: oklch(.73 .024 255); --sidebar-active: oklch(.32 .07 255); --sidebar-heading: oklch(.97 .003 255); --sidebar-border: oklch(.3 .03 255); --primary-soft: oklch(.95 .025 255); --success-soft: oklch(.95 .03 155); --warning-soft: oklch(.97 .035 85); --danger-soft: oklch(.96 .025 25); --shadow-panel: 0 2px 6px oklch(.2 .02 255 / .025); }
+:root { --background: oklch(.975 .003 250); --foreground: oklch(.24 .025 255); --card: oklch(1 0 0); --primary: oklch(.55 .17 257); --primary-foreground: oklch(1 0 0); --secondary: oklch(.95 .01 250); --muted: oklch(.96 .005 250); --muted-foreground: oklch(.50 .024 255); --accent: oklch(.94 .02 250); --border: oklch(.91 .01 250); --destructive: oklch(.59 .2 26); --success: oklch(.53 .12 160); --warning: oklch(.53 .12 70); --sidebar: oklch(.205 .035 257); --sidebar-text: oklch(.73 .024 255); --sidebar-active: oklch(.32 .07 255); --sidebar-heading: oklch(.97 .003 255); --sidebar-border: oklch(.3 .03 255); --primary-soft: oklch(.95 .025 255); --success-soft: oklch(.95 .03 155); --warning-soft: oklch(.97 .035 85); --danger-soft: oklch(.96 .025 25); --shadow-panel: 0 2px 6px oklch(.2 .02 255 / .025); }
 .dark { --background: oklch(.165 .014 255); --foreground: oklch(.95 .006 250); --card: oklch(.205 .016 255); --primary: oklch(.72 .14 255); --primary-foreground: oklch(.16 .02 255); --secondary: oklch(.26 .02 255); --muted: oklch(.24 .014 255); --muted-foreground: oklch(.72 .022 250); --accent: oklch(.28 .03 255); --border: oklch(.285 .018 255); --success: oklch(.72 .15 160); --warning: oklch(.80 .14 80); --destructive: oklch(.74 .16 25); --primary-soft: oklch(.27 .04 255); --success-soft: oklch(.27 .03 155); --warning-soft: oklch(.28 .03 85); --danger-soft: oklch(.28 .03 25); }
 @layer base { * { border-color: var(--border); } body { margin: 0; background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: 14px; letter-spacing: 0; } button,input,select { font: inherit; } button,a,input,select { -webkit-tap-highlight-color: transparent; } input:focus,select:focus { outline: 2px solid var(--primary); outline-offset: 2px; } }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0,1fr); }
@@ -77,6 +77,13 @@
 .history-row:hover { background-color: var(--muted); }
 .history-row:last-child { border-bottom: 0; }
 @media(max-width:760px) { .history-row { grid-template-columns: 1.4fr repeat(3,1fr); padding: 12px; font-size: 10px; overflow-wrap: anywhere; } }
+
+@layer base {
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 3px solid var(--primary);
+    outline-offset: 3px;
+  }
+}
 
 /* Page entrance transition */
 .page-transition {

@@ -29,6 +29,7 @@ export interface LocationAutocompleteProps {
   rightAction?: React.ReactNode | undefined;
   showRecentSearches?: boolean;
   debounceMs?: number;
+  cityScope?: string;
   onSearchSubmit?: (query: string) => void;
   'aria-label'?: string;
   resetKey?: number | string;
@@ -118,6 +119,7 @@ export function LocationAutocomplete({
   rightAction,
   showRecentSearches = true,
   debounceMs = 250,
+  cityScope,
   onSearchSubmit,
   'aria-label': ariaLabel,
   resetKey,
@@ -201,7 +203,9 @@ export function LocationAutocomplete({
       setError(null);
 
       try {
-        const places = await searchLocations(trimmed, controller.signal);
+        const places = cityScope
+          ? await searchLocations(trimmed, controller.signal, cityScope)
+          : await searchLocations(trimmed, controller.signal);
         if (!controller.signal.aborted && currentSearchId === activeSearchIdRef.current) {
           setResults(places);
           setIsOpen(true);
@@ -219,7 +223,7 @@ export function LocationAutocomplete({
         }
       }
     },
-    []
+    [cityScope]
   );
 
   // Handle Input text change

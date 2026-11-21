@@ -1,20 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   MapContainer,
   TileLayer,
   CircleMarker,
-  Polyline,
+  GeoJSON,
   Popup,
   useMap,
   useMapEvents,
   ZoomControl,
 } from 'react-leaflet';
-import type * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { RefreshCw, AlertCircle, MapPin, Radio, Compass } from 'lucide-react';
+import { RefreshCw, AlertCircle, MapPin, Radio, Compass, History, Play, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTraffic, locationKey } from './TrafficProvider';
-import type { TrafficSegment } from '@/types/traffic';
+import type { TrafficReading, TrafficSegment } from '@/types/traffic';
+import { getHistory } from '@/services/api';
+import { strings } from '@/strings';
+import { metricColor, type TrafficMetric } from '@/lib/map-metrics';
 
 import { getTrafficColor, getTrafficCondition } from '@/lib/traffic-utils';
 export { getTrafficColor, getTrafficCondition };
@@ -160,20 +162,72 @@ export default function MapCanvas({
     lastRefreshedAt,
     lastUpdated,
     monitoredLocations,
+    isStale,
   } = useTraffic();
 
   const [currentZoom, setCurrentZoom] = useState(14);
+  const [metric, setMetric] = useState<TrafficMetric>('congestion');
+  const [playbackOpen, setPlaybackOpen] = useState(false);
+  const [playbackRows, setPlaybackRows] = useState<TrafficReading[]>([]);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const [playbackPlaying, setPlaybackPlaying] = useState(false);
+  const [playbackLoading, setPlaybackLoading] = useState(false);
+  const [playbackError, setPlaybackError] = useState('');
   const weights = getLineWeights(currentZoom);
-  const polylineRefs = useRef<(L.Polyline | null)[]>([]);
+  const playbackRow = playbackRows[playbackIndex];
+  const segmentGeoJson = useMemo(() => ({
+    type: 'FeatureCollection' as const,
+    features: segments.flatMap((segment, index) => segment.coordinates?.length >= 2 ? [{
+      type: 'Feature' as const,
+      properties: { segmentIndex: index },
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: segment.coordinates.map(([latitude, longitude]) => [longitude, latitude]),
+      },
+    }] : []),
+  }), [segments]);
+  const activeSegment = selectedSegmentIndex === null ? undefined : segments[selectedSegmentIndex];
+  const activeSegmentMidpoint = activeSegment?.coordinates?.[Math.floor((activeSegment.coordinates.length || 1) / 2)];
+
+  const loadPlayback = async () => {
+    setPlaybackOpen(true);
+    setPlaybackError('');
+    if (playbackRows.length > 0) return;
+    setPlaybackLoading(true);
+    try {
+      const params = new URLSearchParams({ city: location.city, area: location.area, limit: '500' });
+      const rows = await getHistory(params);
+      setPlaybackRows(rows);
+      setPlaybackIndex(0);
+      if (rows.length === 0) setPlaybackError(strings.map.noHistory);
+    } catch (reason) {
+      setPlaybackError(reason instanceof Error ? reason.message : 'Unable to load stored observations.');
+    } finally {
+      setPlaybackLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (selectedSegmentIndex !== null && selectedSegmentIndex !== undefined) {
-      const poly = polylineRefs.current[selectedSegmentIndex];
-      if (poly) {
-        poly.openPopup();
-      }
+    setPlaybackRows([]);
+    setPlaybackIndex(0);
+    setPlaybackPlaying(false);
+    setPlaybackError('');
+  }, [location.city, location.area]);
+
+  useEffect(() => {
+    if (!playbackPlaying || playbackRows.length < 2) return;
+    const timer = setInterval(() => {
+      setPlaybackIndex(current => Math.min(current + 1, playbackRows.length - 1));
+    }, 900);
+    return () => clearInterval(timer);
+  }, [playbackPlaying, playbackRows.length]);
+
+  useEffect(() => {
+    if (playbackPlaying && playbackIndex >= playbackRows.length - 1) {
+      setPlaybackPlaying(false);
+      setPlaybackIndex(0);
     }
-  }, [selectedSegmentIndex]);
+  }, [playbackPlaying, playbackIndex, playbackRows.length]);
 
   const formattedTime = lastRefreshedAt
     ? lastRefreshedAt.toLocaleTimeString('en-IN', {
@@ -212,9 +266,9 @@ export default function MapCanvas({
             </div>
           ) : (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className={`h-2 w-2 rounded-full ${isStale ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
               <span className="text-[11px]">
-                {formattedTime ? `Updated ${formattedTime}` : 'Live (60s refresh)'}
+                {isStale ? 'Stale observation' : formattedTime ? `Observed ${formattedTime}` : 'Live (60s refresh)'}
               </span>
             </div>
           )}
@@ -231,6 +285,21 @@ export default function MapCanvas({
             <RefreshCw size={12} className={segmentsLoading ? 'animate-spin' : ''} />
           </Button>
         </div>
+      </div>
+
+      <div className="absolute top-[3.6rem] right-3 z-[1000] flex items-center gap-2 pointer-events-auto">
+        <label className="flex items-center gap-2 rounded-md border border-border bg-card/95 px-2 py-1.5 text-xs shadow-md">
+          <span className="font-medium">{strings.map.layer}</span>
+          <select value={metric} onChange={event => setMetric(event.target.value as TrafficMetric)} className="max-w-32 bg-transparent text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" aria-label={strings.map.layer}>
+            <option value="congestion">{strings.map.congestion}</option>
+            <option value="speed">{strings.map.speed}</option>
+            <option value="travelTime">{strings.map.travelTime}</option>
+            <option value="confidence">{strings.map.confidence}</option>
+          </select>
+        </label>
+        <Button size="sm" variant="outline" className="h-8 bg-card/95 text-xs shadow-md" onClick={() => playbackOpen ? setPlaybackOpen(false) : void loadPlayback()} aria-expanded={playbackOpen}>
+          <History size={14} /> <span className="hidden sm:inline">{strings.map.playback}</span>
+        </Button>
       </div>
 
       {/* Segments Error Notification */}
@@ -263,6 +332,7 @@ export default function MapCanvas({
       <MapContainer
         center={[location.latitude, location.longitude]}
         zoom={14}
+        preferCanvas
         zoomControl={false}
         scrollWheelZoom
         className="map-canvas h-full w-full"
@@ -284,137 +354,51 @@ export default function MapCanvas({
           segments={segments}
         />
 
-        {/* Render Multiple Road Segments with Dual Lines */}
-        {segments.map((segment, index) => {
-          if (!segment.coordinates || segment.coordinates.length < 2) return null;
+        {/* A single vector source contains all road segments. */}
+        <GeoJSON
+          data={segmentGeoJson}
+          style={feature => {
+            const index = Number(feature?.properties?.segmentIndex);
+            const segment = segments[index];
+            const selected = selectedSegmentIndex === index;
+            return {
+              color: selected ? '#1d4ed8' : segment ? metricColor(segment, metric) : '#64748b',
+              weight: selected ? weights.inner + 4 : weights.inner,
+              opacity: 1,
+              lineCap: 'round',
+              lineJoin: 'round',
+            };
+          }}
+          eventHandlers={{
+            click: event => {
+              event.originalEvent?.stopPropagation();
+              const clickedEvent = event as typeof event & {
+                layer?: { feature?: { properties?: { segmentIndex?: number } } };
+                propagatedFrom?: { feature?: { properties?: { segmentIndex?: number } } };
+                sourceTarget?: { feature?: { properties?: { segmentIndex?: number } } };
+              };
+              const layer = clickedEvent.layer ?? clickedEvent.propagatedFrom ?? clickedEvent.sourceTarget;
+              const index = layer?.feature?.properties?.segmentIndex;
+              if (typeof index === 'number') onSelectSegment?.(index);
+            },
+          }}
+        />
 
-          const color = getTrafficColor(segment.congestion_percent);
-          const condition = getTrafficCondition(segment.congestion_percent);
-          const startPt = segment.coordinates[0];
-          const midPt = segment.coordinates[Math.floor(segment.coordinates.length / 2)];
-          if (!startPt || !midPt) return null;
-          const key = `seg-${segment.id || index}-${startPt[0].toFixed(4)}-${midPt[1].toFixed(4)}`;
-          const isSelected = selectedSegmentIndex === index;
-
-          return (
-            <React.Fragment key={key}>
-              {/* Outer dark/highlight outline for contrast */}
-              <Polyline
-                positions={segment.coordinates}
-                pathOptions={{
-                  color: isSelected ? '#1e40af' : '#0f172a',
-                  weight: isSelected ? weights.outline + 6 : weights.outline,
-                  opacity: isSelected ? 1 : 0.95,
-                  lineCap: 'round',
-                  lineJoin: 'round',
-                }}
-                interactive={false}
-              />
-
-              {/* Inner colored flow line */}
-              <Polyline
-                ref={el => {
-                  polylineRefs.current[index] = el;
-                }}
-                positions={segment.coordinates}
-                pathOptions={{
-                  color: isSelected ? '#3b82f6' : color,
-                  weight: isSelected ? weights.inner + 3 : weights.inner,
-                  opacity: 1,
-                  lineCap: 'round',
-                  lineJoin: 'round',
-                }}
-                eventHandlers={{
-                  click: e => {
-                    e.originalEvent?.stopPropagation();
-                    onSelectSegment?.(index);
-                  },
-                }}
-              >
-                <Popup>
-                  <div className="p-1 min-w-[210px] text-xs space-y-2 text-foreground font-sans">
-                    <div className="flex items-center justify-between border-b border-border pb-1.5">
-                      <span className="font-bold text-sm flex items-center gap-1.5">
-                        <span
-                          className="h-2.5 w-2.5 rounded-full inline-block"
-                          style={{ backgroundColor: color }}
-                        />
-                        {condition}
-                      </span>
-                      <span className="text-[10px] font-semibold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                        {segment.name || `Road segment ${index + 1}`}
-                      </span>
-                    </div>
-
-                    <div className="space-y-1 text-muted-foreground pt-0.5">
-                      <div className="flex justify-between">
-                        <span>Congestion:</span>
-                        <strong className="text-foreground">
-                          {segment.congestion_percent !== null && Number.isFinite(segment.congestion_percent)
-                            ? `${segment.congestion_percent.toFixed(1)}%`
-                            : 'N/A'}
-                        </strong>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Current Speed:</span>
-                        <strong className="text-foreground">
-                          {segment.current_speed_kmh !== null && Number.isFinite(segment.current_speed_kmh)
-                            ? `${segment.current_speed_kmh} km/h`
-                            : 'N/A'}
-                        </strong>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Free-flow Speed:</span>
-                        <strong className="text-foreground">
-                          {segment.free_flow_speed_kmh !== null && Number.isFinite(segment.free_flow_speed_kmh)
-                            ? `${segment.free_flow_speed_kmh} km/h`
-                            : 'N/A'}
-                        </strong>
-                      </div>
-                      {segment.current_travel_time_seconds !== null &&
-                        segment.current_travel_time_seconds !== undefined && (
-                          <div className="flex justify-between">
-                            <span>Est. Travel Time:</span>
-                            <strong className="text-foreground">
-                              {(segment.current_travel_time_seconds / 60).toFixed(1)} min
-                            </strong>
-                          </div>
-                        )}
-                      {segment.confidence !== null && segment.confidence !== undefined && (
-                        <div className="flex justify-between">
-                          <span>Confidence:</span>
-                          <strong className="text-foreground">
-                            {(segment.confidence * 100).toFixed(0)}%
-                          </strong>
-                        </div>
-                      )}
-                      {segment.frc && (
-                        <div className="flex justify-between">
-                          <span>Road Class:</span>
-                          <strong className="text-foreground uppercase">{segment.frc}</strong>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="text-[10px] text-muted-foreground border-t border-border pt-1.5 flex items-center justify-between">
-                      <span>Source: TomTom Flow API</span>
-                      <span className="text-emerald-600 font-semibold">
-                        {lastUpdated
-                          ? new Date(lastUpdated).toLocaleTimeString('en-IN', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })
-                          : formattedTime
-                          ? `Updated ${formattedTime}`
-                          : 'Live'}
-                      </span>
-                    </div>
-                  </div>
-                </Popup>
-              </Polyline>
-            </React.Fragment>
-          );
-        })}
+        {activeSegment && activeSegmentMidpoint && <Popup position={activeSegmentMidpoint}>
+          <div className="p-1 min-w-[210px] space-y-2 text-xs text-foreground">
+            <strong className="block border-b pb-1.5">{activeSegment.name || `Road segment ${(selectedSegmentIndex ?? 0) + 1}`} · {getTrafficCondition(activeSegment.congestion_percent)}</strong>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+              <dt>Congestion</dt><dd className="text-foreground">{activeSegment.congestion_percent == null ? 'Unavailable' : `${activeSegment.congestion_percent.toFixed(1)}%`}</dd>
+              <dt>Current speed</dt><dd className="text-foreground">{activeSegment.current_speed_kmh == null ? 'Unavailable' : `${activeSegment.current_speed_kmh} km/h`}</dd>
+              <dt>Free-flow speed</dt><dd className="text-foreground">{activeSegment.free_flow_speed_kmh == null ? 'Unavailable' : `${activeSegment.free_flow_speed_kmh} km/h`}</dd>
+              <dt>Travel time</dt><dd className="text-foreground">{activeSegment.current_travel_time_seconds == null ? 'Unavailable' : `${(activeSegment.current_travel_time_seconds / 60).toFixed(1)} min`}</dd>
+              <dt>Confidence</dt><dd className="text-foreground">{activeSegment.confidence == null ? 'Unavailable' : `${(activeSegment.confidence * 100).toFixed(0)}%`}</dd>
+            </dl>
+            <div className="border-t pt-1.5 text-[10px] text-muted-foreground">
+              <span>Observed from TomTom Flow API</span>{' · '}{lastUpdated ? new Date(lastUpdated).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : formattedTime || 'Latest stored observation'}
+            </div>
+          </div>
+        </Popup>}
 
         {/* Monitored Locations Markers */}
         {monitoredLocations.map(place => (
@@ -459,6 +443,22 @@ export default function MapCanvas({
           </CircleMarker>
         ))}
 
+        {playbackRow && <CircleMarker
+          key={`playback-${playbackRow.timestamp}`}
+          center={[playbackRow.latitude, playbackRow.longitude]}
+          radius={11}
+          pathOptions={{ color: '#1d4ed8', weight: 3, fillColor: '#facc15', fillOpacity: 0.95, dashArray: '3 3' }}
+        >
+          <Popup>
+            <div className="space-y-1 text-xs">
+              <strong>{strings.map.observed}</strong>
+              <div>{playbackRow.area}, {playbackRow.city}</div>
+              <time dateTime={playbackRow.timestamp}>{new Date(playbackRow.timestamp).toLocaleString()}</time>
+              <div>{playbackRow.current_speed_kmh ?? '—'} km/h · {playbackRow.congestion_percent ?? '—'}% congestion</div>
+            </div>
+          </Popup>
+        </CircleMarker>}
+
         {/* Selected Active Location Marker */}
         <CircleMarker
           center={[location.latitude, location.longitude]}
@@ -485,23 +485,38 @@ export default function MapCanvas({
         </CircleMarker>
       </MapContainer>
 
-      {/* Traffic Map Legend conforming strictly to required colors */}
+      {playbackOpen && <div className="absolute bottom-[3.6rem] left-3 right-3 z-[1000] rounded-md border border-border bg-card/95 p-2.5 shadow-md backdrop-blur" aria-label="Observed traffic playback">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs font-semibold">{strings.map.observed}</span>
+          <Button size="icon" variant="outline" className="h-8 w-8" onClick={() => playbackRows.length && setPlaybackPlaying(value => !value)} disabled={playbackRows.length < 2 || playbackLoading} aria-label={playbackPlaying ? 'Pause playback' : 'Play observations'}>
+            {playbackPlaying ? <Pause size={14} /> : <Play size={14} />}
+          </Button>
+          {playbackLoading ? <span role="status" className="text-xs text-muted-foreground">{strings.state.loading}</span> : playbackRows.length > 0 ? <>
+            <input type="range" min={0} max={playbackRows.length - 1} value={playbackIndex} onChange={event => { setPlaybackPlaying(false); setPlaybackIndex(Number(event.target.value)); }} className="min-w-28 flex-1 accent-primary" aria-label="Select observed playback time" />
+            <time className="text-xs tabular-nums" dateTime={playbackRow?.timestamp}>{playbackRow ? new Date(playbackRow.timestamp).toLocaleString() : ''}</time>
+            <span className="text-xs text-muted-foreground">{playbackIndex + 1} / {playbackRows.length}</span>
+          </> : <span role={playbackError.includes('No stored') ? 'status' : 'alert'} className="text-xs text-muted-foreground">{playbackError || strings.map.noHistory}</span>}
+          {playbackRows.length === 0 && !playbackLoading && <Button size="sm" variant="ghost" onClick={() => { setPlaybackRows([]); void loadPlayback(); }}>{strings.state.retry}</Button>}
+        </div>
+      </div>}
+
+      {/* Traffic Map Legend */}
       <div className="absolute bottom-0 left-0 right-0 z-[1000] bg-card/95 backdrop-blur-md border-t border-border px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-4 flex-wrap">
           <span className="font-bold text-[11px] tracking-wider uppercase text-muted-foreground">
-            Congestion:
+            {metric === 'congestion' ? `${strings.map.congestion}:` : metric === 'travelTime' ? `${strings.map.travelTime}:` : metric === 'speed' ? `${strings.map.speed}:` : `${strings.map.confidence}:`}
           </span>
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[#059669]" />
-            <span className="text-foreground text-[11px]">Low (&lt;30%)</span>
+            <span className="text-foreground text-[11px]">{metric === 'congestion' ? 'Low (&lt;30%)' : metric === 'speed' ? 'Near free-flow' : metric === 'travelTime' ? 'Near free-flow time' : 'High (≥80%)'}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[#eab308]" />
-            <span className="text-foreground text-[11px]">Moderate (30–59%)</span>
+            <span className="text-foreground text-[11px]">{metric === 'congestion' ? 'Moderate (30–59%)' : metric === 'speed' ? 'Reduced speed' : metric === 'travelTime' ? 'Elevated travel time' : 'Medium (50–79%)'}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[#dc2626]" />
-            <span className="text-foreground text-[11px]">Heavy (≥60%)</span>
+            <span className="text-foreground text-[11px]">{metric === 'congestion' ? 'Heavy (≥60%)' : metric === 'speed' ? 'Low speed' : metric === 'travelTime' ? 'High delay ratio' : 'Low (<50%)'}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[#64748b]" />

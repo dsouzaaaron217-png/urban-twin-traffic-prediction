@@ -108,6 +108,7 @@ interface PlaceSearchInputProps {
   locatingCurrent?: boolean;
   onQueryChange?: (query: string) => void;
   resetKey?: number;
+  cityScope?: string;
 }
 
 function PlaceSearchInput({
@@ -121,6 +122,7 @@ function PlaceSearchInput({
   locatingCurrent = false,
   onQueryChange,
   resetKey = 0,
+  cityScope,
 }: PlaceSearchInputProps) {
   return (
     <LocationAutocomplete
@@ -133,6 +135,7 @@ function PlaceSearchInput({
       iconColor={iconColor}
       onInputChange={onQueryChange}
       resetKey={resetKey}
+      {...(cityScope ? { cityScope } : {})}
       showRecentSearches={true}
       rightAction={
         onUseCurrentLocation ? (
@@ -588,6 +591,7 @@ export function RoutePlannerPage() {
             resetKey={resetCount}
             placeholder="Enter destination…"
             iconColor="text-red-600"
+            {...(source?.city ? { cityScope: source.city } : {})}
           />
 
           {/* Route Preferences */}

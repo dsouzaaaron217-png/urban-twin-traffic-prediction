@@ -18,13 +18,16 @@ import {
 import { Button } from '@/components/ui/button';
 import { useTraffic } from './TrafficProvider';
 import { LocationSearch } from './LocationSearch';
+import { strings } from '@/strings';
 
 const navigation = [
-  { to: '/' as const, title: 'Dashboard', icon: LayoutDashboard },
-  { to: '/analytics' as const, title: 'Traffic Analytics', icon: ChartNoAxesCombined },
-  { to: '/predictions' as const, title: 'Predictions', icon: BrainCircuit },
-  { to: '/hotspots' as const, title: 'Congestion Hotspots', icon: Flame },
-  { to: '/locations' as const, title: 'My Locations', icon: MapPin },
+  { to: '/' as const, title: strings.navigation.dashboard, icon: LayoutDashboard },
+  { to: '/analytics' as const, title: strings.navigation.analytics, icon: ChartNoAxesCombined },
+  { to: '/predictions' as const, title: strings.navigation.predictions, icon: BrainCircuit },
+  { to: '/hotspots' as const, title: strings.navigation.hotspots, icon: Flame },
+  { to: '/locations' as const, title: strings.navigation.locations, icon: MapPin },
+  { to: '/alerts' as const, title: strings.navigation.alerts, icon: Activity },
+  { to: '/model-evaluation' as const, title: strings.navigation.evaluation, icon: ChartNoAxesCombined },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -69,10 +72,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
           <div className="nav-divider" />
-          <a href="/readiness" onClick={() => setOpen(false)} className={`nav-link ${pathname === '/readiness' ? 'active' : ''}`}>
+          <Link to="/readiness" onClick={() => setOpen(false)} className={`nav-link ${pathname === '/readiness' ? 'active' : ''}`}>
             <Activity />
-            <span>Forecast Readiness</span>
-          </a>
+            <span>{strings.navigation.readiness}</span>
+          </Link>
           <Link
             to="/about"
             onClick={() => setOpen(false)}

@@ -11,11 +11,13 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AboutRouteImport } from './routes/about'
+import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as HotspotsRouteImport } from './routes/hotspots'
 import { Route as LiveTrafficRouteImport } from './routes/live-traffic'
 import { Route as LocationsRouteImport } from './routes/locations'
+import { Route as ModelEvaluationRouteImport } from './routes/model-evaluation'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as PredictionsRouteImport } from './routes/predictions'
 import { Route as ReadinessRouteImport } from './routes/readiness'
@@ -29,6 +31,11 @@ const IndexRoute = IndexRouteImport.update({
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
   path: '/about',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AlertsRoute = AlertsRouteImport.update({
+  id: '/alerts',
+  path: '/alerts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AnalyticsRoute = AnalyticsRouteImport.update({
@@ -56,6 +63,11 @@ const LocationsRoute = LocationsRouteImport.update({
   path: '/locations',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ModelEvaluationRoute = ModelEvaluationRouteImport.update({
+  id: '/model-evaluation',
+  path: '/model-evaluation',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OverviewRoute = OverviewRouteImport.update({
   id: '/overview',
   path: '/overview',
@@ -80,11 +92,13 @@ const RoutePlannerRoute = RoutePlannerRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/alerts': typeof AlertsRoute
   '/analytics': typeof AnalyticsRoute
   '/dashboard': typeof DashboardRoute
   '/hotspots': typeof HotspotsRoute
   '/live-traffic': typeof LiveTrafficRoute
   '/locations': typeof LocationsRoute
+  '/model-evaluation': typeof ModelEvaluationRoute
   '/overview': typeof OverviewRoute
   '/predictions': typeof PredictionsRoute
   '/readiness': typeof ReadinessRoute
@@ -93,11 +107,13 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/alerts': typeof AlertsRoute
   '/analytics': typeof AnalyticsRoute
   '/dashboard': typeof DashboardRoute
   '/hotspots': typeof HotspotsRoute
   '/live-traffic': typeof LiveTrafficRoute
   '/locations': typeof LocationsRoute
+  '/model-evaluation': typeof ModelEvaluationRoute
   '/overview': typeof OverviewRoute
   '/predictions': typeof PredictionsRoute
   '/readiness': typeof ReadinessRoute
@@ -107,11 +123,13 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/alerts': typeof AlertsRoute
   '/analytics': typeof AnalyticsRoute
   '/dashboard': typeof DashboardRoute
   '/hotspots': typeof HotspotsRoute
   '/live-traffic': typeof LiveTrafficRoute
   '/locations': typeof LocationsRoute
+  '/model-evaluation': typeof ModelEvaluationRoute
   '/overview': typeof OverviewRoute
   '/predictions': typeof PredictionsRoute
   '/readiness': typeof ReadinessRoute
@@ -122,11 +140,13 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/about'
+    | '/alerts'
     | '/analytics'
     | '/dashboard'
     | '/hotspots'
     | '/live-traffic'
     | '/locations'
+    | '/model-evaluation'
     | '/overview'
     | '/predictions'
     | '/readiness'
@@ -135,11 +155,13 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/about'
+    | '/alerts'
     | '/analytics'
     | '/dashboard'
     | '/hotspots'
     | '/live-traffic'
     | '/locations'
+    | '/model-evaluation'
     | '/overview'
     | '/predictions'
     | '/readiness'
@@ -148,11 +170,13 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/about'
+    | '/alerts'
     | '/analytics'
     | '/dashboard'
     | '/hotspots'
     | '/live-traffic'
     | '/locations'
+    | '/model-evaluation'
     | '/overview'
     | '/predictions'
     | '/readiness'
@@ -162,11 +186,13 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  AlertsRoute: typeof AlertsRoute
   AnalyticsRoute: typeof AnalyticsRoute
   DashboardRoute: typeof DashboardRoute
   HotspotsRoute: typeof HotspotsRoute
   LiveTrafficRoute: typeof LiveTrafficRoute
   LocationsRoute: typeof LocationsRoute
+  ModelEvaluationRoute: typeof ModelEvaluationRoute
   OverviewRoute: typeof OverviewRoute
   PredictionsRoute: typeof PredictionsRoute
   ReadinessRoute: typeof ReadinessRoute
@@ -187,6 +213,13 @@ declare module '@tanstack/react-router' {
       path: '/about'
       fullPath: '/about'
       preLoaderRoute: typeof AboutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/alerts': {
+      id: '/alerts'
+      path: '/alerts'
+      fullPath: '/alerts'
+      preLoaderRoute: typeof AlertsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/analytics': {
@@ -224,6 +257,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LocationsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/model-evaluation': {
+      id: '/model-evaluation'
+      path: '/model-evaluation'
+      fullPath: '/model-evaluation'
+      preLoaderRoute: typeof ModelEvaluationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/overview': {
       id: '/overview'
       path: '/overview'
@@ -258,11 +298,13 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  AlertsRoute: AlertsRoute,
   AnalyticsRoute: AnalyticsRoute,
   DashboardRoute: DashboardRoute,
   HotspotsRoute: HotspotsRoute,
   LiveTrafficRoute: LiveTrafficRoute,
   LocationsRoute: LocationsRoute,
+  ModelEvaluationRoute: ModelEvaluationRoute,
   OverviewRoute: OverviewRoute,
   PredictionsRoute: PredictionsRoute,
   ReadinessRoute: ReadinessRoute,

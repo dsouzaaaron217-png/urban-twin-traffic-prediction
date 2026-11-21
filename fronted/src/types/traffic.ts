@@ -193,6 +193,32 @@ export interface CollectorStatusResponse {
   tomtom_api_configured: boolean;
 }
 
+export interface TrafficAlert {
+  id: string;
+  type: string;
+  severity: 'info' | 'warning' | 'critical' | string;
+  message: string;
+  city?: string | null;
+  area?: string | null;
+  generated_at: string;
+}
+
+export interface ForecastActual {
+  id: number;
+  city: string;
+  area: string;
+  horizon_minutes: number;
+  origin_timestamp: string;
+  target_timestamp: string;
+  generated_at: string;
+  predicted_congestion_percent: number;
+  actual_timestamp: string | null;
+  actual_congestion_percent: number | null;
+  model_version: string | null;
+  data_source: string;
+  data_quality: string;
+}
+
 export interface ModelHorizonEvaluation {
   horizon_minutes: number;
   supported: boolean;
