@@ -339,14 +339,15 @@ def reserve_daily_request(provider: str, daily_budget: int) -> None:
 def readiness() -> dict:
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=MIN_HISTORY_DAYS)
+    verified_filter = "lower(source) IN ('tomtom', 'verified_csv_import') AND quality IN ('validated', 'gap_after_previous_observation')"
     with closing(connect()) as db:
-        rows = db.execute("SELECT corridor,city,area,latitude,longitude,MIN(timestamp_utc),MAX(timestamp_utc) FROM observations GROUP BY corridor ORDER BY city,area").fetchall()
+        rows = db.execute(f"SELECT corridor,city,area,latitude,longitude,MIN(timestamp_utc),MAX(timestamp_utc) FROM observations WHERE {verified_filter} GROUP BY corridor ORDER BY city,area").fetchall()
     corridors = []
     for key, city, area, lat, lon, first, last in rows:
         first_dt, last_dt = datetime.fromisoformat(first), datetime.fromisoformat(last)
         days = max(0, (last_dt.date() - first_dt.date()).days + 1)
         with closing(connect()) as db:
-            recent_count = db.execute("SELECT COUNT(*) FROM observations WHERE corridor=? AND timestamp_utc>=? AND timestamp_utc<=?", (key, start.isoformat(), now.isoformat())).fetchone()[0]
+            recent_count = db.execute(f"SELECT COUNT(*) FROM observations WHERE corridor=? AND timestamp_utc>=? AND timestamp_utc<=? AND {verified_filter}", (key, start.isoformat(), now.isoformat())).fetchone()[0]
         expected = max(1, math.floor((now - start).total_seconds() / (POLL_MINUTES * 60)))
         coverage = min(1.0, recent_count / expected)
         ready = first_dt <= start and last_dt >= now - timedelta(minutes=2 * POLL_MINUTES) and coverage >= MIN_COVERAGE

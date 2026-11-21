@@ -89,8 +89,8 @@ def test_restart_marks_open_runs_interrupted(phase1_db):
 
 
 def test_readiness_reports_collecting_state_for_sparse_history(phase1_db):
-    run_id = pipeline.start_run("csv_import")
-    pipeline.record_observation(sample("2026-10-15T10:00:00+05:30"), "csv_import", run_id)
+    run_id = pipeline.start_run("verified_csv_import")
+    pipeline.record_observation(sample("2026-10-15T10:00:00+05:30"), "verified_csv_import", run_id)
     result = pipeline.readiness()
     assert len(result["corridors"]) == 1
     assert result["corridors"][0]["ready"] is False

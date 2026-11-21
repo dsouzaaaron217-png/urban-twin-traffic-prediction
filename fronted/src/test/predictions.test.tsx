@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import { PredictionsView } from '@/components/traffic/PredictionsView';
 import * as api from '@/services/api';
@@ -261,14 +261,39 @@ describe('PredictionsView Component', () => {
 
     // 5. Multi-Horizon Outlook Cards
     expect(screen.getByText('Forecast by Time')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Pune' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Central Pune (480 obs)' })).toBeInTheDocument();
+    expect(screen.getByText('Target: 11:15')).toBeInTheDocument();
 
     // Removed empty/unverified comparison and model-accuracy sections stay out of the UI.
     expect(screen.queryByText('Compare Other Roads')).not.toBeInTheDocument();
     expect(screen.queryByText('Forecast Accuracy and Data Quality')).not.toBeInTheDocument();
 
     // 8. Data Pipeline Status
-    expect(screen.getByText(/Cleaned Historical Dataset:/)).toBeInTheDocument();
+    expect(screen.getByText(/Cleaned Historical Dataset output:/)).toBeInTheDocument();
     expect(screen.getByText(/1,083 cleaned observations/)).toBeInTheDocument();
+    expect(screen.getByText(/separate cleanup-pipeline total/)).toBeInTheDocument();
+  });
+
+  it('labels unclassified city and road options with their forecast readiness', async () => {
+    vi.spyOn(api, 'getPredictionLocations').mockResolvedValue({
+      total_locations: 1,
+      locations: [{
+        city: 'Unknown',
+        area: 'Unknown',
+        latitude: 0,
+        longitude: 0,
+        observation_count: 4,
+        has_sufficient_history: false,
+        history_days: 0,
+        coverage: 0,
+      }],
+    });
+
+    render(<PredictionsView />);
+
+    expect(await screen.findByRole('option', { name: 'Unknown' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Unclassified area (4 obs)' })).toBeInTheDocument();
   });
 
   it('allows switching forecast horizon to +30m and +60m', async () => {
@@ -313,6 +338,7 @@ describe('PredictionsView Component', () => {
         coverage: 0.5,
         readiness_note: 'Collecting data: 2 of 14 days',
       },
+      data_quality: { verified_history: false, status: 'insufficient_history', source: 'legacy_cleaned_dataset_unverified' },
       message: 'Collecting data: 2 of 14 days',
       predictions: [],
     };
@@ -324,13 +350,15 @@ describe('PredictionsView Component', () => {
     await waitFor(() => {
       expect(screen.getByText(/Accumulating Historical Observations/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/7 observations · 50% coverage/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Collecting data: 2 of 14 days/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/7 available observations · 0% verified coverage/)).toBeInTheDocument();
+    expect(screen.getByText(/0\/14 verified history days/)).toBeInTheDocument();
+    expect(screen.getByText(/These available observations are unverified and do not count toward ML forecast readiness/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Collecting data: 0 of 14 days/).length).toBeGreaterThan(0);
     // Live speed is reported truthfully
     expect(screen.getByText('22 km/h')).toBeInTheDocument();
   });
 
-  it('shows a disclosed trend estimate when verified forecast history is insufficient', async () => {
+  it('labels the trend prediction when verified forecast history is insufficient', async () => {
     const estimateInput: PredictionResponse = {
       ...MOCK_PREDICTION,
       forecast_available: false,
@@ -348,9 +376,24 @@ describe('PredictionsView Component', () => {
 
     render(<PredictionsView />);
 
-    expect(await screen.findByText('Estimate · not validated.')).toBeInTheDocument();
-    expect(screen.getAllByText('Estimate · not validated').length).toBeGreaterThan(0);
-    expect(screen.getByText(/trend estimate from recent road observations/i)).toBeInTheDocument();
+    expect((await screen.findAllByText('Predicted')).length).toBeGreaterThan(0);
+    expect(screen.getByText(/trend prediction from recent road observations/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No validated ML forecast is available/)).not.toBeInTheDocument();
+
+    const predictedValue = (horizon: number) => {
+      const marker = screen.getAllByText(`+${horizon} Minutes`).find(element =>
+        element.closest('[role="button"]')?.textContent?.includes('Predicted')
+      );
+      const card = marker?.closest<HTMLElement>('[role="button"]');
+      const value = card && within(card).getByText(/^\d+(?:\.\d+)?%$/).textContent;
+      return value ? Number.parseFloat(value) : null;
+    };
+    const fifteenMinutePrediction = predictedValue(15);
+    const sixtyMinutePrediction = predictedValue(60);
+    expect(fifteenMinutePrediction).not.toBeNull();
+    expect(sixtyMinutePrediction).not.toBeNull();
+    expect(fifteenMinutePrediction).toBeGreaterThan(0);
+    expect(sixtyMinutePrediction).not.toBe(fifteenMinutePrediction);
   });
 
   it('labels a validation fallback and shows a drift warning', async () => {

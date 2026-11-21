@@ -61,7 +61,7 @@ function formatTime(isoStr?: string | null): string {
   if (!isoStr) return '--:--';
   const d = new Date(isoStr);
   if (Number.isNaN(d.getTime())) return '--:--';
-  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
 }
 
 function formatDateTime(isoStr?: string | null): string {
@@ -71,8 +71,10 @@ function formatDateTime(isoStr?: string | null): string {
   return d.toLocaleString('en-IN', {
     day: '2-digit',
     month: 'short',
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: 'Asia/Kolkata',
   });
 }
 
@@ -133,7 +135,7 @@ export function PredictionsView() {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
-  const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
   // Race condition mitigation refs
   const requestIdRef = useRef<number>(0);
@@ -323,11 +325,33 @@ export function PredictionsView() {
     const congestionSlope = slopePerMinute('congestion');
     const speedSlope = slopePerMinute('speed');
     const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+    const median = (values: number[]) => {
+      const ordered = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(ordered.length / 2);
+      const lower = ordered[middle - 1];
+      const upper = ordered[middle];
+      if (ordered.length === 0) return 0;
+      return ordered.length % 2 === 0 ? ((lower ?? 0) + (upper ?? 0)) / 2 : upper ?? 0;
+    };
+    const earlierObservations = observations.slice(0, -1);
+    const congestionBaseline = median(earlierObservations.map(item => item.congestion));
+    const speedBaseline = median(earlierObservations.map(item => item.speed));
 
     return [15, 30, 60].map(horizon => {
-      const damping = 0.5;
-      const congestion = Number(clamp(last.congestion + congestionSlope * horizon * damping, 0, 100).toFixed(1));
-      const speed = Number(clamp(last.speed + speedSlope * horizon * damping, 0, last.freeFlowSpeed).toFixed(1));
+      const trendDamping = 0.5;
+      const meanReversionWeight = 1 - Math.exp(-horizon / 45);
+      const trendCongestion = last.congestion + congestionSlope * horizon * trendDamping;
+      const trendSpeed = last.speed + speedSlope * horizon * trendDamping;
+      const congestion = Number(clamp(
+        trendCongestion + (congestionBaseline - trendCongestion) * meanReversionWeight,
+        0,
+        100,
+      ).toFixed(1));
+      const speed = Number(clamp(
+        trendSpeed + (speedBaseline - trendSpeed) * meanReversionWeight,
+        0,
+        last.freeFlowSpeed,
+      ).toFixed(1));
       const congestionDelta = Number((congestion - last.congestion).toFixed(1));
       const speedDelta = Number((speed - last.speed).toFixed(1));
       const direction = congestionDelta > 1 ? 'worsening' : congestionDelta < -1 ? 'improving' : 'stable';
@@ -390,7 +414,7 @@ export function PredictionsView() {
       estimatedForecasts.forEach(estimate => {
         points.push({
           timestamp: estimate.timestamp,
-          timeLabel: `Estimate +${estimate.horizon_minutes}m (${formatTime(estimate.timestamp)})`,
+          timeLabel: `Predicted +${estimate.horizon_minutes}m (${formatTime(estimate.timestamp)})`,
           predictedCongestion: estimate.predicted_congestion_percent,
           predictedSpeed: estimate.predicted_speed_kmh,
           isForecast: true,
@@ -411,6 +435,16 @@ export function PredictionsView() {
     predictionData?.data_status?.is_stale ||
     (dataStatus?.data_age_minutes && dataStatus.data_age_minutes > 45)
   );
+  const historyIsUnverified = predictionData?.data_quality?.verified_history === false;
+  const verifiedReadinessDays = historyIsUnverified ? 0 : predictionData?.data_status?.history_days ?? 0;
+  const verifiedReadinessCoverage = historyIsUnverified ? 0 : predictionData?.data_status?.coverage;
+  const readinessNote = historyIsUnverified && !predictionData?.is_demo
+    ? 'Collecting data: 0 of 14 days'
+    : predictionData?.data_status?.readiness_note || predictionData?.message || `Collecting data: ${verifiedReadinessDays} of 14 days`;
+  const isFlatTrendPrediction = !predictionData?.forecast_available
+    && estimatedForecasts.length > 1
+    && estimatedForecasts.every(estimate => estimate.congestion_delta === 0 && estimate.speed_delta === 0);
+  const staleAgeMinutes = predictionData?.live_traffic?.data_age_minutes ?? predictionData?.data_status?.data_age_minutes;
 
   // Chart theme-aware palette
   const gridColor = isDark ? '#334155' : '#e2e8f0';
@@ -476,7 +510,7 @@ export function PredictionsView() {
           </div>
 
           <span className="text-xs text-slate-500 dark:text-slate-400 hidden md:inline ml-1">
-            Updated {formatTime(lastRefreshed.toISOString())}
+            Updated {lastRefreshed ? formatTime(lastRefreshed.toISOString()) : '--:--'}
           </span>
         </div>
       </header>
@@ -533,7 +567,9 @@ export function PredictionsView() {
               </option>
               {uniqueCities.map(c => (
                 <option key={c} value={c}>
-                  {c === 'Unknown' && unknownLocationsAreKnownKarnatakaAreas ? 'Karnataka' : c}
+                  {c === 'Unknown'
+                    ? unknownLocationsAreKnownKarnatakaAreas ? 'Karnataka' : 'Unknown'
+                    : c}
                 </option>
               ))}
             </select>
@@ -556,7 +592,7 @@ export function PredictionsView() {
               </option>
               {areasForCity.map(l => (
                 <option key={`${l.city}-${l.area}`} value={l.area}>
-                  {l.area} ({l.observation_count} obs)
+                  {(l.area.trim().toLowerCase() === 'unknown' ? 'Unclassified area' : l.area)} ({l.observation_count} obs)
                 </option>
               ))}
             </select>
@@ -651,7 +687,7 @@ export function PredictionsView() {
           <div className="min-w-0">
             <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate">Last Refresh Time</div>
             <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5 truncate">
-              {formatTime(lastRefreshed.toISOString())}
+              {lastRefreshed ? formatTime(lastRefreshed.toISOString()) : '--:--'}
             </div>
           </div>
         </div>
@@ -707,15 +743,23 @@ export function PredictionsView() {
             <div
               className="bg-amber-500 h-full rounded-full transition-all duration-500"
               style={{
-                width: `${Math.min(100, ((predictionData?.data_status?.coverage ?? 0) * 100))}%`,
+                width: `${Math.min(100, (verifiedReadinessCoverage ?? 0) * 100)}%`,
               }}
             />
           </div>
 
-          <div className="flex flex-col sm:flex-row justify-between text-xs text-slate-600 dark:text-slate-400 gap-1">
-            <span>{predictionData?.data_status?.total_observations ?? 0} observations · {predictionData?.data_status?.coverage != null ? `${Math.round(predictionData.data_status.coverage * 100)}% coverage` : 'coverage unavailable'}</span>
+          <div className="flex flex-col text-xs text-slate-600 dark:text-slate-400 gap-1">
+            <span>{predictionData?.data_status?.total_observations ?? 0} available observations · {verifiedReadinessCoverage != null ? `${Math.round(verifiedReadinessCoverage * 100)}% verified coverage` : 'verified coverage unavailable'}</span>
+            <span>{verifiedReadinessDays}/14 verified history days</span>
+            {historyIsUnverified && (
+              <span className="text-amber-700 dark:text-amber-300">
+                {predictionData.is_demo
+                  ? 'These simulated observations are not real and do not count toward ML forecast readiness.'
+                  : 'These available observations are unverified and do not count toward ML forecast readiness.'}
+              </span>
+            )}
             <span className="font-medium text-slate-800 dark:text-slate-200">
-              {predictionData?.data_status?.readiness_note || predictionData?.message || `Collecting data: ${predictionData?.data_status?.history_days ?? 0} of 14 days`}
+              {readinessNote}
             </span>
           </div>
 
@@ -886,12 +930,6 @@ export function PredictionsView() {
         </section>
       )}
 
-      {estimatedForecasts.length > 0 && !predictionData?.forecast_available && (
-        <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-          <strong>Estimate · not validated.</strong> It extrapolates recent observations because this road has not met the verified-history requirement for an ML forecast.
-        </div>
-      )}
-
       {/* SECTION D: Observed vs. Forecasted Trajectory Chart */}
       <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-6 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
@@ -904,7 +942,7 @@ export function PredictionsView() {
               {predictionData?.forecast_available
                 ? 'Compare recent traffic observations with the forecast for your selected road.'
                 : estimatedForecasts.length > 0
-                  ? 'Amber dotted line: trend estimate from recent road observations; not a validated ML forecast.'
+                  ? 'Amber dotted line: trend prediction from recent road observations; not a validated ML forecast.'
                   : predictionData
                     ? `No forecast is shown. ${predictionData.data_status?.readiness_note || predictionData.message || 'This location has not met the forecast data requirements.'}`
                     : 'Compare recent traffic observations with the forecast for your selected road.'}
@@ -937,6 +975,12 @@ export function PredictionsView() {
             </button>
           </div>
         </div>
+
+        {isFlatTrendPrediction && (
+          <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+            Recent road observations show no material change, so the trend prediction remains unchanged across these horizons.
+          </p>
+        )}
 
         {/* Chart Canvas */}
         <div className="h-80 w-full pt-2">
@@ -1009,7 +1053,7 @@ export function PredictionsView() {
                     stroke={predictionData?.forecast_available ? '#9333ea' : '#d97706'}
                     strokeWidth={2.5}
                     strokeDasharray="5 5"
-                    name={predictionData?.forecast_available ? `Forecast (+${selectedHorizon}m)` : 'Estimate · not validated'}
+                    name={predictionData?.forecast_available ? `Forecast (+${selectedHorizon}m)` : 'Predicted'}
                     dot={{ r: 5, fill: predictionData?.forecast_available ? '#9333ea' : '#d97706', stroke: '#fff', strokeWidth: 1.5 }}
                   />
                 )}
@@ -1049,6 +1093,14 @@ export function PredictionsView() {
           </span>
         </div>
 
+        {isStale && liveConditions && (predictionData?.forecast_available || estimatedForecasts.length > 0) && (
+          <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <strong>Predictions use a stale observation.</strong>{' '}
+            The forecast is based on the reading from {formatDateTime(liveConditions.timestamp)}
+            {staleAgeMinutes != null ? ` (${Math.round(staleAgeMinutes).toLocaleString()} minutes old)` : ''}; it may not reflect current traffic.
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[15, 30, 60].map(h => {
             const outlook = predictionData?.outlooks?.[`${h}m`];
@@ -1056,6 +1108,7 @@ export function PredictionsView() {
             const isSelected = selectedHorizon === h;
             const realAvailable = predictionData?.forecast_available && outlook?.predicted_congestion_percent != null;
             const estimateAvailable = !realAvailable && estimate != null;
+            const targetTimestamp = realAvailable ? outlook?.timestamp : estimateAvailable ? estimate?.timestamp : undefined;
             const cong = realAvailable ? outlook?.predicted_congestion_percent : estimate?.predicted_congestion_percent;
             const spd = realAvailable ? outlook?.predicted_speed_kmh : estimate?.predicted_speed_kmh;
             const delta = realAvailable ? outlook?.congestion_delta : estimate?.congestion_delta;
@@ -1084,7 +1137,7 @@ export function PredictionsView() {
                       ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
                   }`}>
-                    {realAvailable ? 'Forecast available' : estimateAvailable ? 'Estimate · not validated' : 'Insufficient data'}
+                    {realAvailable ? 'Validated forecast' : estimateAvailable ? 'Predicted' : 'No validated forecast'}
                   </span>
                 </div>
 
@@ -1117,7 +1170,7 @@ export function PredictionsView() {
                 </div>
 
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Target: {realAvailable && outlook?.timestamp ? formatTime(outlook.timestamp) : '--:--'}
+                  Target: {targetTimestamp ? formatTime(targetTimestamp) : '--:--'}
                 </div>
               </div>
             );
@@ -1130,13 +1183,17 @@ export function PredictionsView() {
         <div className="flex items-center gap-2">
           <Database className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           <span>
-            Cleaned Historical Dataset:{' '}
+            Cleaned Historical Dataset output:{' '}
             <strong className="text-slate-900 dark:text-white font-semibold">
               {(dataStatus?.total_cleaned_rows ?? 0).toLocaleString()} cleaned observations
             </strong>{' '}
             ({dataStatus?.time_span_hours ?? 0} hours covered)
           </span>
         </div>
+
+        <p className="basis-full text-[11px] text-slate-500 dark:text-slate-400">
+          This is the separate cleanup-pipeline total; available observations for the selected road above come from the prediction source and are counted separately.
+        </p>
 
         <div className="flex flex-wrap items-center gap-4 text-slate-500 dark:text-slate-400">
           <span>Duplicates Removed: {dataStatus?.exact_duplicates_removed ?? 0} exact, {dataStatus?.logical_duplicates_removed ?? 0} logical</span>
