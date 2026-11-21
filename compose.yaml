@@ -1,0 +1,51 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      API_KEY: ${API_KEY:-}
+      TOMTOM_API_KEY: ${TOMTOM_API_KEY:-}
+      ENABLE_TOMTOM_SCHEDULER: "${ENABLE_TOMTOM_SCHEDULER:-false}"
+      ENABLE_MODEL_RETRAINING: "false"
+      DATABASE_URL: sqlite:////var/lib/trafficwatch/trafficwatch.sqlite3
+      CORS_ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+    ports:
+      - "8000:8000"
+    volumes:
+      - trafficwatch-db:/var/lib/trafficwatch
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./fronted
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://127.0.0.1:8080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  trafficwatch-db:

@@ -9,6 +9,7 @@ Handles:
 """
 
 import math
+from contextlib import closing
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -149,7 +150,7 @@ def load_verified_phase1_dataset() -> pd.DataFrame:
     if not DB_PATH.exists():
         return pd.DataFrame()
     try:
-        with sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)) as connection:
             rows = pd.read_sql_query(
                 """SELECT timestamp_utc AS timestamp, city, area, latitude, longitude,
                           current_speed_kmh, free_flow_speed_kmh,

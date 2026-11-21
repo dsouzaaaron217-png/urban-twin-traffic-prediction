@@ -110,3 +110,10 @@ $RECYCLE.BIN/
 *.orig
 
 data/tomtom_usage.sqlite3
+
+# Playwright output
+fronted/test-results/
+fronted/playwright-report/
+
+# Local ingestion database (runtime data)
+data/phase1_ingestion.sqlite3

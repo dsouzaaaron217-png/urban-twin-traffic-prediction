@@ -22,7 +22,6 @@ import type {
   TrafficAlert,
   ForecastActual,
 } from '@/types/traffic';
-import { searchPlaces as searchPlacesFallback } from './geocoding';
 
 export { MonitoredLocation, SavedLocation };
 
@@ -209,39 +208,31 @@ export async function getHotspots(
   };
 }
 
-/** Search location via backend Nominatim proxy with fallback */
+/** Search location via the backend provider; provider failures are surfaced to the caller. */
 export async function searchLocations(query: string, signal?: AbortSignal, cityScope?: string): Promise<Location[]> {
   const trimmed = query.trim();
   if (trimmed.length < 1) return [];
-
-  try {
-    const params = new URLSearchParams({ q: trimmed });
-    if (cityScope?.trim()) params.set('city', cityScope.trim());
-    const payload = await request<{ locations: Location[] }>(
-      `/api/search-location?${params.toString()}`,
-      signal
-    );
-
-    if (payload && Array.isArray(payload.locations) && payload.locations.length > 0) {
-    const mapped = payload.locations.map(loc => ({
-        name: loc.name || `${loc.area || ''}, ${loc.city}`.trim(),
-        city: loc.city || 'Unknown',
-        area: loc.area || (loc.name ? (loc.name.split(',')[0] ?? '').trim() : 'Selected area'),
-        latitude: Number(loc.latitude),
-        longitude: Number(loc.longitude),
-      }));
-    return cityScope?.trim()
-      ? mapped.filter(loc => loc.city.trim().toLocaleLowerCase() === cityScope.trim().toLocaleLowerCase()
-        || (cityScope.toLocaleLowerCase() === 'bengaluru' && loc.city.toLocaleLowerCase() === 'bangalore')
-        || (cityScope.toLocaleLowerCase() === 'mangaluru' && loc.city.toLocaleLowerCase() === 'mangalore'))
-      : mapped;
-    }
-  } catch (backendError) {
-    console.warn('Backend search-location failed, falling back to OSM directly:', backendError);
+  const params = new URLSearchParams({ q: trimmed });
+  if (cityScope?.trim()) params.set('city', cityScope.trim());
+  const payload = await request<{ locations: Location[]; source?: string; message?: string }>(
+    `/api/search-location?${params.toString()}`,
+    signal
+  );
+  if (payload.source === 'unavailable') {
+    throw new Error(payload.message || 'Place suggestions are unavailable.');
   }
+  if (!Array.isArray(payload?.locations)) return [];
 
-  // Fallback to geocoding.ts
-  return searchPlacesFallback(trimmed, cityScope);
+  const mapped = payload.locations.map(loc => ({
+    name: loc.name || `${loc.area || ''}, ${loc.city}`.trim(),
+    city: loc.city || 'Unknown',
+    area: loc.area || (loc.name ? (loc.name.split(',')[0] ?? '').trim() : 'Selected area'),
+    latitude: Number(loc.latitude),
+    longitude: Number(loc.longitude),
+  }));
+  if (!cityScope?.trim()) return mapped;
+  const normalizeCity = (city: string) => ({ bengaluru: 'bangalore', mangaluru: 'mangalore' }[city.trim().toLocaleLowerCase()] || city.trim().toLocaleLowerCase());
+  return mapped.filter(loc => normalizeCity(loc.city) === normalizeCity(cityScope));
 }
 
 /** Fetches historical traffic readings */

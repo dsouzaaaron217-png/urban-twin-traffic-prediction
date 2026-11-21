@@ -912,7 +912,7 @@ export function AboutDataView() {
 
             <div className="p-3 rounded-lg bg-secondary/30 border border-border">
               <span className="font-bold text-foreground block mb-0.5">Traffic Telemetry</span>
-              <span className="text-[11px] text-muted-foreground">TomTom Traffic Flow API & Nominatim</span>
+              <span className="text-[11px] text-muted-foreground">TomTom Traffic Flow API and Search</span>
             </div>
 
             <div className="p-3 rounded-lg bg-secondary/30 border border-border">

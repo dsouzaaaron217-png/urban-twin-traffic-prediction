@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 
 import requests
 import pandas as pd
@@ -695,7 +695,7 @@ def health():
     components = {"process": "healthy", "phase1_store": "healthy"}
     try:
         from services.phase1_pipeline import connect
-        with connect() as db:
+        with closing(connect()) as db, db:
             db.execute("SELECT 1")
     except Exception:
         components["phase1_store"] = "unavailable"
@@ -797,127 +797,69 @@ def search_location(
 
     provider_query = f"{cleaned_q}, {scoped_city}" if scoped_city and normalized_city(scoped_city) not in normalized_city(cleaned_q) else cleaned_q
 
-    # 1. Try TomTom Search API if key is available and query length >= 2
-    if TOMTOM_API_KEY and len(cleaned_q) >= 2:
-        try:
-            tomtom_url = f"https://api.tomtom.com/search/2/search/{requests.utils.quote(provider_query)}.json"
-            tomtom_resp = tomtom_get("search", 
-                tomtom_url,
-                params={
-                    "key": TOMTOM_API_KEY,
-                    "countrySet": "IN",
-                    "limit": 5,
-                },
-                timeout=6,
-            )
-            if tomtom_resp.ok:
-                data = tomtom_resp.json()
-                results = data.get("results", [])
-                if results:
-                    locations = []
-                    for item in results:
-                        address = item.get("address", {})
-                        poi = item.get("poi", {})
-                        pos = item.get("position", {})
-                        if "lat" not in pos or "lon" not in pos:
-                            continue
+    if len(cleaned_q) < 2:
+        return {"locations": [], "source": "tomtom", "message": "Enter at least two characters."}
+    if not TOMTOM_API_KEY:
+        return {
+            "locations": [],
+            "source": "unavailable",
+            "message": "Place suggestions require a configured TomTom API key.",
+        }
 
-                        freeform = address.get("freeformAddress", "")
-                        poi_name = poi.get("name", "")
-                        disp_name = poi_name if poi_name and freeform and poi_name in freeform else (f"{poi_name}, {freeform}" if poi_name and freeform else (freeform or poi_name or cleaned_q))
-
-                        city = (
-                            address.get("municipality")
-                            or address.get("countrySecondarySubdivision")
-                            or address.get("countrySubdivision")
-                            or ""
-                        )
-                        if not is_in_scope(city):
-                            continue
-                        area = (
-                            poi_name
-                            or address.get("municipalitySubdivision")
-                            or address.get("neighbourhood")
-                            or address.get("streetName")
-                            or (disp_name.split(",")[0].strip() if disp_name else "Selected area")
-                        )
-                        locations.append({
-                            "name": disp_name,
-                            "city": city,
-                            "area": area,
-                            "latitude": float(pos["lat"]),
-                            "longitude": float(pos["lon"]),
-                        })
-                    if locations:
-                        return {"locations": locations}
-        except Exception as exc:
-            print("TomTom location search error, falling back to OSM Nominatim:", repr(exc))
-
-    # 2. OpenStreetMap Nominatim search (supports single-character queries like 'S' with countrycodes='in')
-    url = "https://nominatim.openstreetmap.org/search"
     try:
-        response = requests.get(
-            url,
-            params={
-                "q": provider_query,
-                "countrycodes": "in",
-                "format": "jsonv2",
-                "limit": 5,
-                "addressdetails": 1,
-            },
-            headers={
-                "User-Agent": "TrafficWatchStudentProject/1.0"
-            },
-            timeout=15,
+        tomtom_url = f"https://api.tomtom.com/search/2/search/{requests.utils.quote(provider_query)}.json"
+        tomtom_resp = tomtom_get(
+            "search",
+            tomtom_url,
+            params={"key": TOMTOM_API_KEY, "countrySet": "IN", "limit": 5},
+            timeout=6,
         )
-
-        print("Location search HTTP status:", response.status_code)
-        response.raise_for_status()
-
-        results = response.json()
-        print("Location search returned:", len(results), "results")
-
-        locations = []
-        for item in results:
-            address = item.get("address", {})
-            result_city = (
-                address.get("city")
-                or address.get("town")
-                or address.get("municipality")
-                or address.get("village")
-                or address.get("county")
-                or ""
-            )
-            if not is_in_scope(result_city):
-                continue
-            locations.append({
-                "name": item.get("display_name", ""),
-                "city": result_city,
-                "area": (
-                    address.get("suburb")
+        if tomtom_resp.ok:
+            locations = []
+            for item in tomtom_resp.json().get("results", []):
+                address = item.get("address", {})
+                poi = item.get("poi", {})
+                position = item.get("position", {})
+                if "lat" not in position or "lon" not in position:
+                    continue
+                freeform = address.get("freeformAddress", "")
+                poi_name = poi.get("name", "")
+                display_name = poi_name if poi_name and freeform and poi_name in freeform else (
+                    f"{poi_name}, {freeform}" if poi_name and freeform else (freeform or poi_name or cleaned_q)
+                )
+                result_city = (
+                    address.get("municipality")
+                    or address.get("countrySecondarySubdivision")
+                    or address.get("countrySubdivision")
+                    or ""
+                )
+                if not is_in_scope(result_city):
+                    continue
+                area = (
+                    poi_name
+                    or address.get("municipalitySubdivision")
                     or address.get("neighbourhood")
-                    or address.get("road")
-                    or (item.get("display_name", "").split(",")[0].strip())
-                    or "Selected area"
-                ),
-                "latitude": float(item["lat"]),
-                "longitude": float(item["lon"]),
-            })
+                    or address.get("streetName")
+                    or (display_name.split(",")[0].strip() if display_name else "Selected area")
+                )
+                locations.append({
+                    "name": display_name,
+                    "city": result_city,
+                    "area": area,
+                    "latitude": float(position["lat"]),
+                    "longitude": float(position["lon"]),
+                })
+            if locations:
+                return {"locations": locations, "source": "tomtom"}
+    except Exception:
+        # Do not log provider exceptions or URLs; they may contain query data or credentials.
+        print("TomTom location search failed; no provider results returned.")
 
-        return {"locations": locations}
-
-    except requests.RequestException as e:
-        print("Location search error:", repr(e))
-        raise HTTPException(
-            status_code=502,
-            detail=str(e)
-        )
-    except (ValueError, KeyError, TypeError) as e:
-        print("Location search data error:", repr(e))
-        raise HTTPException(
-            status_code=502,
-            detail="Could not process the location search response."
-        )
+    return {
+        "locations": [],
+        "source": "tomtom",
+        "message": "No matching places were returned by the configured provider.",
+    }
 
 
 
@@ -1696,7 +1638,8 @@ def get_traffic_dataset(csv_path: Optional[Path] = None) -> Optional[pd.DataFram
             # Invalidate and reload
             import pandas as pd
             df = pd.read_csv(target_csv)
-            df["dt"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            # Normalize mixed ISO offsets to UTC before sorting; pandas otherwise rejects mixed zones.
+            df["dt"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
             df = df.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
             _traffic_dataset_cache = df
             _traffic_dataset_mtime = mtime

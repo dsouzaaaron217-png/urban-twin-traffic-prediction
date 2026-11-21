@@ -88,20 +88,20 @@ class SyntheticSource:
 
 def resilient_call(provider: str, operation: Callable[[], Any], attempts: int = 3):
     now = datetime.now(timezone.utc)
-    with connect() as db:
+    with closing(connect()) as db, db:
         row = db.execute("SELECT failures,open_until FROM breaker WHERE provider=?", (provider,)).fetchone()
     if row and row[1] and datetime.fromisoformat(row[1]) > now:
         raise RuntimeError(f"{provider} circuit breaker is open")
     for attempt in range(attempts):
         try:
             result = operation()
-            with connect() as db:
+            with closing(connect()) as db, db:
                 db.execute("INSERT INTO breaker(provider,failures,open_until) VALUES(?,0,NULL) ON CONFLICT(provider) DO UPDATE SET failures=0,open_until=NULL", (provider,))
             return result
         except Exception:
             failures = (row[0] if row else 0) + 1
             until = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat() if failures >= 5 else None
-            with connect() as db:
+            with closing(connect()) as db, db:
                 db.execute("INSERT INTO breaker(provider,failures,open_until) VALUES(?,?,?) ON CONFLICT(provider) DO UPDATE SET failures=excluded.failures,open_until=excluded.open_until", (provider, failures, until))
             if attempt + 1 == attempts:
                 raise

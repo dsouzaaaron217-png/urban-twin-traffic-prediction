@@ -6,21 +6,14 @@ import {
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
-  CheckCircle2,
   Clock,
   Database,
-  Gauge,
-  Info,
   Layers,
   Loader2,
   MapPin,
   RefreshCw,
-  Search,
-  SlidersHorizontal,
   TrendingDown,
   TrendingUp,
-  ChevronDown,
-  ChevronUp,
   ShieldCheck,
 } from 'lucide-react';
 import {
@@ -39,18 +32,31 @@ import { useTraffic } from './TrafficProvider';
 import {
   getPredictions,
   getPredictionLocations,
-  getRoadsOutlook,
   getPredictionDataStatus,
   getModelStatus,
 } from '@/services/api';
 import type {
   PredictionResponse,
   PredictionLocation,
-  RoadOutlookItem,
   PredictionDataStatusResponse,
   ModelStatusResponse,
   Forecast,
 } from '@/types/traffic';
+
+function isKnownKarnatakaUnknownArea(location: PredictionLocation): boolean {
+  const area = location.area.trim().toLowerCase();
+  const latitude = Number(location.latitude);
+  const longitude = Number(location.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return false;
+
+  if (area === 'kc road') {
+    return latitude >= 12.7 && latitude <= 13.0 && longitude >= 74.7 && longitude <= 75.1;
+  }
+  if (area === 'udupi hebri road') {
+    return latitude >= 13.2 && latitude <= 13.5 && longitude >= 74.6 && longitude <= 75.0;
+  }
+  return false;
+}
 
 function formatTime(isoStr?: string | null): string {
   if (!isoStr) return '--:--';
@@ -114,64 +120,79 @@ export function PredictionsView() {
   const [selectedHorizon, setSelectedHorizon] = useState<number>(15);
   const [chartMetric, setChartMetric] = useState<'congestion' | 'speed'>('congestion');
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
-  const [showModelDetails, setShowModelDetails] = useState<boolean>(false);
-
-  // Roads outlook table filter & search
-  const [roadFilter, setRoadFilter] = useState<'all' | 'worsening' | 'improving' | 'stable'>('all');
-  const [roadSearch, setRoadSearch] = useState<string>('');
-  const [roadSortBy, setRoadSortBy] = useState<string>('worsening');
 
   // API Data state
   const [locations, setLocations] = useState<PredictionLocation[]>([]);
   const [predictionData, setPredictionData] = useState<PredictionResponse | null>(null);
-  const [roadsOutlook, setRoadsOutlook] = useState<RoadOutlookItem[]>([]);
   const [dataStatus, setDataStatus] = useState<PredictionDataStatusResponse | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelStatusResponse | null>(null);
 
   // Loading & error state
   const [loading, setLoading] = useState<boolean>(true);
+  const [locationsLoading, setLocationsLoading] = useState<boolean>(true);
+  const [metadataRetry, setMetadataRetry] = useState(0);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
 
   // Race condition mitigation refs
   const requestIdRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // 1. Initial locations load
+  // 1. Load locations and status independently so a failure in one API does not hide the others.
   useEffect(() => {
     let active = true;
-    async function loadMeta() {
-      try {
-        const [locRes, dsRes, msRes] = await Promise.all([
-          getPredictionLocations(),
-          getPredictionDataStatus(),
-          getModelStatus(),
-        ]);
-        if (!active) return;
-        setLocations(locRes.locations || []);
-        setDataStatus(dsRes);
-        setModelStatus(msRes);
+    setLocationsLoading(true);
 
-        // Set initial selection if empty
-        if (locRes.locations && locRes.locations.length > 0) {
-          const match = locRes.locations.find(
+    async function loadMeta() {
+      const [locationsResult, dataStatusResult, modelStatusResult] = await Promise.allSettled([
+        getPredictionLocations(),
+        getPredictionDataStatus(),
+        getModelStatus(),
+      ]);
+      if (!active) return;
+
+      const errors: string[] = [];
+      if (locationsResult.status === 'fulfilled') {
+        const availableLocations = locationsResult.value.locations || [];
+        setLocations(availableLocations);
+        if (availableLocations.length > 0) {
+          const currentSelection = metadataRetry > 0
+            ? availableLocations.find(l => l.city === selectedCity && l.area === selectedArea)
+            : undefined;
+          const match = availableLocations.find(
             l => l.city.toLowerCase() === globalLocation.city.toLowerCase() ||
                  l.area.toLowerCase() === globalLocation.area.toLowerCase()
           );
-          const initLoc = match || locRes.locations[0];
-          if (initLoc) {
-            setSelectedCity(initLoc.city);
-            setSelectedArea(initLoc.area);
+          const initialLocation = currentSelection || match || availableLocations[0];
+          if (initialLocation) {
+            setSelectedCity(initialLocation.city);
+            setSelectedArea(initialLocation.area);
           }
+        } else {
+          setSelectedCity('');
+          setSelectedArea('');
         }
-      } catch (err: any) {
-        if (active) setError(err.message || 'Failed to initialize prediction service.');
+      } else {
+        setLocations([]);
+        errors.push(`Available roads could not be loaded: ${locationsResult.reason instanceof Error ? locationsResult.reason.message : 'request failed.'}`);
       }
+
+      if (dataStatusResult.status === 'fulfilled') setDataStatus(dataStatusResult.value);
+      else errors.push(`Data status could not be loaded: ${dataStatusResult.reason instanceof Error ? dataStatusResult.reason.message : 'request failed.'}`);
+
+      if (modelStatusResult.status === 'fulfilled') setModelStatus(modelStatusResult.value);
+      else errors.push(`Model status could not be loaded: ${modelStatusResult.reason instanceof Error ? modelStatusResult.reason.message : 'request failed.'}`);
+
+      setMetadataError(errors.length ? errors.join(' ') : null);
+      setLocationsLoading(false);
+      setLoading(false);
     }
-    loadMeta();
+
+    void loadMeta();
     return () => { active = false; };
-  }, []);
+  }, [globalLocation.area, globalLocation.city, metadataRetry]);
 
   // 2. Fetch Prediction for selected area & horizon with race-condition prevention
   const fetchPrediction = useCallback(async (isRefresh = false) => {
@@ -195,24 +216,20 @@ export function PredictionsView() {
       if (selectedArea) params.set('area', selectedArea);
       params.set('horizon_minutes', String(selectedHorizon));
 
-      const [pred, roads, ds] = await Promise.all([
+      const [predictionResult, dataStatusResult] = await Promise.allSettled([
         getPredictions(params),
-        getRoadsOutlook(new URLSearchParams({
-          city: selectedCity,
-          horizon_minutes: String(selectedHorizon),
-          sort_by: roadSortBy,
-        })),
         getPredictionDataStatus(),
       ]);
 
-      // If a newer request was dispatched while this was pending, drop this response
-      if (currentRequestId !== requestIdRef.current) {
-        return;
-      }
+      // If a newer request was dispatched while this was pending, drop this response.
+      if (currentRequestId !== requestIdRef.current) return;
+      if (predictionResult.status === 'rejected') throw predictionResult.reason;
 
-      setPredictionData(pred);
-      setRoadsOutlook(roads.roads || []);
-      setDataStatus(ds);
+      setPredictionData(predictionResult.value);
+      const supplementaryErrors: string[] = [];
+      if (dataStatusResult.status === 'fulfilled') setDataStatus(dataStatusResult.value);
+      else supplementaryErrors.push('Data status could not be refreshed.');
+      setError(supplementaryErrors.length ? supplementaryErrors.join(' ') : null);
       setLastRefreshed(new Date());
     } catch (err: any) {
       if (err.name === 'AbortError' || currentRequestId !== requestIdRef.current) {
@@ -225,7 +242,7 @@ export function PredictionsView() {
         setRefreshing(false);
       }
     }
-  }, [selectedCity, selectedArea, selectedHorizon, roadSortBy]);
+  }, [selectedCity, selectedArea, selectedHorizon]);
 
   useEffect(() => {
     fetchPrediction();
@@ -251,6 +268,10 @@ export function PredictionsView() {
     locations.forEach(l => { if (l.city) set.add(l.city); });
     return Array.from(set).sort();
   }, [locations]);
+  const unknownLocationsAreKnownKarnatakaAreas = useMemo(() => {
+    const unknownLocations = locations.filter(location => location.city.trim().toLowerCase() === 'unknown');
+    return unknownLocations.length > 0 && unknownLocations.every(isKnownKarnatakaUnknownArea);
+  }, [locations]);
 
   // Areas for selected city
   const areasForCity = useMemo(() => {
@@ -258,26 +279,31 @@ export function PredictionsView() {
     return locations.filter(l => l.city.toLowerCase() === selectedCity.toLowerCase());
   }, [locations, selectedCity]);
 
-  // Filtered roads for comparison table
-  const filteredRoads = useMemo(() => {
-    return roadsOutlook.filter(r => {
-      if (roadFilter === 'worsening' && r.direction !== 'worsening') return false;
-      if (roadFilter === 'improving' && r.direction !== 'improving') return false;
-      if (roadFilter === 'stable' && r.direction !== 'stable') return false;
-      if (roadSearch.trim()) {
-        const q = roadSearch.toLowerCase();
-        return r.road_name.toLowerCase().includes(q) || r.city.toLowerCase().includes(q);
-      }
-      return true;
-    });
-  }, [roadsOutlook, roadFilter, roadSearch]);
+  const activeOutlook = predictionData?.forecast;
+  const liveConditions = predictionData?.live_traffic;
+  const demoForecasts = useMemo(() => {
+    const live = predictionData?.live_traffic;
+    if (predictionData?.forecast_available || !predictionData?.data_available || !live ||
+        live.congestion_percent == null || live.current_speed_kmh == null) return [];
 
-  // Prepare chart series (Historical observations + Current Divider + Future Forecast)
+    const congestion = Number(live.congestion_percent);
+    const speed = Number(live.current_speed_kmh);
+    const observedAt = Date.parse(live.timestamp);
+    if (!Number.isFinite(congestion) || !Number.isFinite(speed) || !Number.isFinite(observedAt)) return [];
+
+    return [15, 30, 60].map(horizon => ({
+      horizon_minutes: horizon,
+      timestamp: new Date(observedAt + horizon * 60_000).toISOString(),
+      predicted_congestion_percent: congestion,
+      predicted_speed_kmh: speed,
+    }));
+  }, [predictionData]);
+
+  // Prepare observed history plus either a validated forecast or a visibly separate demo baseline.
   const chartData = useMemo(() => {
     if (!predictionData) return [];
     const history = predictionData.recent_history || [];
     const forecast = predictionData.forecast;
-    const live = predictionData.live_traffic;
 
     const points: Array<{
       timestamp: string;
@@ -286,10 +312,11 @@ export function PredictionsView() {
       predictedCongestion?: number | null;
       observedSpeed?: number | null;
       predictedSpeed?: number | null;
+      demoCongestion?: number | null;
+      demoSpeed?: number | null;
       isForecast?: boolean;
     }> = [];
 
-    // Historical points
     history.forEach(h => {
       points.push({
         timestamp: h.timestamp,
@@ -299,19 +326,19 @@ export function PredictionsView() {
       });
     });
 
-    // Current observation point (if available)
-    if (live) {
+    if (liveConditions) {
       points.push({
-        timestamp: live.timestamp,
-        timeLabel: formatTime(live.timestamp),
-        observedCongestion: live.congestion_percent,
-        predictedCongestion: live.congestion_percent, // Anchor point connecting lines
-        observedSpeed: live.current_speed_kmh,
-        predictedSpeed: live.current_speed_kmh,
+        timestamp: liveConditions.timestamp,
+        timeLabel: formatTime(liveConditions.timestamp),
+        observedCongestion: liveConditions.congestion_percent,
+        predictedCongestion: predictionData.forecast_available ? liveConditions.congestion_percent : null,
+        observedSpeed: liveConditions.current_speed_kmh,
+        predictedSpeed: predictionData.forecast_available ? liveConditions.current_speed_kmh : null,
+        demoCongestion: demoForecasts.length ? liveConditions.congestion_percent : null,
+        demoSpeed: demoForecasts.length ? liveConditions.current_speed_kmh : null,
       });
     }
 
-    // Future forecast point
     if (forecast && predictionData.forecast_available) {
       points.push({
         timestamp: forecast.timestamp,
@@ -320,13 +347,21 @@ export function PredictionsView() {
         predictedSpeed: forecast.predicted_speed_kmh ?? null,
         isForecast: true,
       });
+    } else {
+      demoForecasts.forEach(demo => {
+        points.push({
+          timestamp: demo.timestamp,
+          timeLabel: `Demo +${demo.horizon_minutes}m (${formatTime(demo.timestamp)})`,
+          demoCongestion: demo.predicted_congestion_percent,
+          demoSpeed: demo.predicted_speed_kmh,
+          isForecast: true,
+        });
+      });
     }
 
     return points;
-  }, [predictionData]);
+  }, [predictionData, liveConditions, demoForecasts]);
 
-  const activeOutlook = predictionData?.forecast;
-  const liveConditions = predictionData?.live_traffic;
   const isInsufficientHistory = predictionData && !predictionData.forecast_available && predictionData.data_available;
   const isZeroHistory = predictionData && !predictionData.data_available;
   const isStale = Boolean(
@@ -343,6 +378,7 @@ export function PredictionsView() {
   const tooltipBg = isDark ? '#0f172a' : '#ffffff';
   const tooltipBorder = isDark ? '#334155' : '#e2e8f0';
   const tooltipTextColor = isDark ? '#f8fafc' : '#0f172a';
+
 
   return (
     <div className="space-y-6 pb-16 font-sans text-slate-900 dark:text-foreground">
@@ -363,8 +399,11 @@ export function PredictionsView() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => fetchPrediction(true)}
-            disabled={refreshing || loading}
+            onClick={() => {
+              setMetadataRetry(retry => retry + 1);
+              if (selectedCity || selectedArea) void fetchPrediction(true);
+            }}
+            disabled={refreshing || loading || locationsLoading}
             className="h-9 px-3 text-xs font-medium border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
           >
             <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? 'animate-spin text-blue-600 dark:text-blue-400' : ''}`} />
@@ -401,6 +440,24 @@ export function PredictionsView() {
         </div>
       </header>
 
+      {(error || metadataError) && (
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200 sm:flex-row sm:items-center sm:justify-between">
+          <p><strong>Prediction data could not be fully loaded.</strong> {[metadataError, error].filter(Boolean).join(' ')}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setMetadataRetry(retry => retry + 1);
+              if (selectedCity || selectedArea) void fetchPrediction(true);
+            }}
+            disabled={refreshing || locationsLoading}
+            className="shrink-0"
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+
       {/* SECTION B: Select a Road & Forecast Period */}
       <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-5 shadow-sm space-y-4">
         <div>
@@ -421,6 +478,7 @@ export function PredictionsView() {
             <select
               id="select-city"
               value={selectedCity}
+              disabled={locationsLoading || uniqueCities.length === 0}
               onChange={e => {
                 const newCity = e.target.value;
                 setSelectedCity(newCity);
@@ -429,8 +487,13 @@ export function PredictionsView() {
               }}
               className="w-full h-10 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
             >
+              <option value="" disabled>
+                {locationsLoading ? 'Loading cities…' : uniqueCities.length ? 'Select a city' : 'No cities available'}
+              </option>
               {uniqueCities.map(c => (
-                <option key={c} value={c}>{c}</option>
+                <option key={c} value={c}>
+                  {c === 'Unknown' && unknownLocationsAreKnownKarnatakaAreas ? 'Karnataka' : c}
+                </option>
               ))}
             </select>
           </div>
@@ -443,9 +506,13 @@ export function PredictionsView() {
             <select
               id="select-road"
               value={selectedArea}
+              disabled={locationsLoading || areasForCity.length === 0}
               onChange={e => setSelectedArea(e.target.value)}
               className="w-full h-10 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
             >
+              <option value="" disabled>
+                {locationsLoading ? 'Loading roads…' : areasForCity.length ? 'Select a road or area' : 'No roads available'}
+              </option>
               {areasForCity.map(l => (
                 <option key={`${l.city}-${l.area}`} value={l.area}>
                   {l.area} ({l.observation_count} obs)
@@ -478,6 +545,12 @@ export function PredictionsView() {
           </div>
         </div>
       </section>
+
+      {!locationsLoading && locations.length === 0 && !metadataError && (
+        <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          No forecast locations are available. The backend must have validated traffic observations before a city or road can appear here.
+        </div>
+      )}
 
       {(predictionData?.forecast?.fallback_reason || predictionData?.outlooks?.[`${selectedHorizon}m`]?.fallback_reason) && (
         <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
@@ -635,6 +708,13 @@ export function PredictionsView() {
         </section>
       )}
 
+      {demoForecasts.length > 0 && (
+        <div role="status" className="rounded-xl border border-amber-400 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+          <strong>Predicted · persistence method.</strong>{' '}
+          The amber dotted line and horizon cards carry the latest observed speed and congestion forward unchanged. This baseline has not yet been evaluated against future observations.
+        </div>
+      )}
+
       {/* 3. Case: Valid Forecast Available */}
       {predictionData?.forecast_available && activeOutlook && liveConditions && (
         <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-6 lg:p-7 shadow-sm">
@@ -781,7 +861,13 @@ export function PredictionsView() {
               How Traffic May Change
             </h2>
             <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-              Compare recent traffic observations with the forecast for your selected road.
+              {predictionData?.forecast_available
+                ? 'Compare recent traffic observations with the forecast for your selected road.'
+                : demoForecasts.length > 0
+                  ? 'Amber dotted line: predicted with persistence, carrying the latest observed values forward.'
+                  : predictionData
+                    ? `No forecast is shown. ${predictionData.data_status?.readiness_note || predictionData.message || 'This location has not met the forecast data requirements.'}`
+                    : 'Compare recent traffic observations with the forecast for your selected road.'}
             </p>
           </div>
 
@@ -875,7 +961,7 @@ export function PredictionsView() {
                   activeDot={{ r: 6 }}
                 />
 
-                {/* Future Forecast Line */}
+                {/* Validated backend forecast */}
                 {predictionData?.forecast_available && (
                   <Line
                     type="monotone"
@@ -887,11 +973,30 @@ export function PredictionsView() {
                     dot={{ r: 5, fill: '#9333ea', stroke: '#fff', strokeWidth: 1.5 }}
                   />
                 )}
+                {!predictionData?.forecast_available && demoForecasts.length > 0 && (
+                  <Line
+                    type="monotone"
+                    dataKey={chartMetric === 'congestion' ? 'demoCongestion' : 'demoSpeed'}
+                    stroke="#d97706"
+                    strokeWidth={2.5}
+                    strokeDasharray="2 5"
+                    name="Predicted · persistence"
+                    dot={{ r: 4, fill: '#d97706', stroke: '#fff', strokeWidth: 1.5 }}
+                  />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-full flex items-center justify-center text-slate-500 text-sm">
-              Insufficient time-series points to render chart.
+            <div className="h-full flex items-center justify-center px-4 text-center text-slate-500 text-sm" role="status">
+              {locationsLoading || loading
+                ? 'Loading traffic observations…'
+                : error || metadataError
+                  ? 'Chart unavailable until prediction data loads. Use Retry above.'
+                  : !selectedCity || !selectedArea
+                    ? 'Select a city and road or area to view traffic history.'
+                    : predictionData?.data_available
+                      ? 'Not enough timestamped observations to render this chart.'
+                      : 'No traffic observations are available for this location yet.'}
             </div>
           )}
         </div>
@@ -917,12 +1022,14 @@ export function PredictionsView() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[15, 30, 60].map(h => {
             const outlook = predictionData?.outlooks?.[`${h}m`];
+            const demoOutlook = demoForecasts.find(item => item.horizon_minutes === h);
             const isSelected = selectedHorizon === h;
-            const cong = outlook?.predicted_congestion_percent;
-            const spd = outlook?.predicted_speed_kmh;
-            const delta = outlook?.congestion_delta;
-            const dir = outlook?.direction;
-            const isAvail = outlook?.model_status !== 'insufficient_data' && cong !== undefined && cong !== null;
+            const realAvailable = predictionData?.forecast_available && outlook?.predicted_congestion_percent != null;
+            const cong = realAvailable ? outlook?.predicted_congestion_percent : demoOutlook?.predicted_congestion_percent;
+            const spd = realAvailable ? outlook?.predicted_speed_kmh : demoOutlook?.predicted_speed_kmh;
+            const delta = realAvailable ? outlook?.congestion_delta : undefined;
+            const dir = realAvailable ? outlook?.direction : undefined;
+            const isAvail = (outlook?.model_status !== 'insufficient_data' && realAvailable) || Boolean(demoOutlook);
 
             return (
               <div
@@ -946,7 +1053,7 @@ export function PredictionsView() {
                       ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
                   }`}>
-                    {isAvail ? 'Forecast available' : 'Insufficient data'}
+                    {realAvailable ? 'Forecast available' : demoOutlook ? 'Predicted · persistence' : 'Insufficient data'}
                   </span>
                 </div>
 
@@ -979,326 +1086,16 @@ export function PredictionsView() {
                 </div>
 
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Target: {outlook?.timestamp ? formatTime(outlook.timestamp) : '--:--'}
+                  Target: {realAvailable && outlook?.timestamp
+                    ? formatTime(outlook.timestamp)
+                    : demoOutlook
+                      ? formatTime(demoOutlook.timestamp)
+                      : '--:--'}
                 </div>
               </div>
             );
           })}
         </div>
-      </section>
-
-      {/* SECTION F: Nearby-Road Comparison */}
-      <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-6 shadow-sm space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-200 dark:border-slate-800">
-          <div>
-            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <SlidersHorizontal className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              Compare Other Roads
-            </h2>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-              See which monitored roads may become more congested or less congested.
-            </p>
-          </div>
-
-          {/* Search & Filter Controls */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search road..."
-                value={roadSearch}
-                onChange={e => setRoadSearch(e.target.value)}
-                className="h-9 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg pl-8 pr-3 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            {/* Filter pills */}
-            <div className="flex items-center bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
-              {(['all', 'worsening', 'improving', 'stable'] as const).map(f => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setRoadFilter(f)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-semibold capitalize transition-colors ${
-                    roadFilter === f
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Table View */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-semibold">
-                <th className="py-3 px-3">Road or Area</th>
-                <th className="py-3 px-3">City</th>
-                <th className="py-3 px-3">Current Congestion</th>
-                <th className="py-3 px-3">Predicted Congestion</th>
-                <th className="py-3 px-3">Expected Change</th>
-                <th className="py-3 px-3">Predicted Speed</th>
-                <th className="py-3 px-3">Forecast Availability</th>
-                <th className="py-3 px-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredRoads.map(r => {
-                const isSelected = selectedArea.toLowerCase() === r.area.toLowerCase();
-                return (
-                  <tr
-                    key={`${r.city}-${r.area}`}
-                    className={`transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40 ${
-                      isSelected ? 'bg-blue-50/70 dark:bg-blue-950/20 font-medium' : ''
-                    }`}
-                  >
-                    <td className="py-3 px-3 font-medium text-slate-900 dark:text-white">
-                      <div className="flex items-center gap-1.5">
-                        <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span>{r.road_name}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 text-slate-600 dark:text-slate-300">{r.city}</td>
-                    <td className="py-3 px-3 text-slate-800 dark:text-slate-200">
-                      <span className="font-semibold">{r.current_congestion_percent}%</span>
-                      <div className="text-[10px] text-slate-500 dark:text-slate-400">{r.current_speed_kmh} km/h</div>
-                    </td>
-                    <td className="py-3 px-3">
-                      {r.predicted_congestion_percent !== null && r.predicted_congestion_percent !== undefined ? (
-                        <span className={`px-2 py-0.5 rounded-full border text-[11px] font-semibold ${getCongestionBadgeClass(r.predicted_congestion_percent)}`}>
-                          {r.predicted_congestion_percent}%
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">Unavailable</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3">
-                      {r.forecast_available && r.predicted_congestion_percent !== null ? (
-                        <span
-                          className={`inline-flex items-center gap-1 font-semibold ${
-                            r.congestion_delta > 0
-                              ? 'text-rose-600 dark:text-rose-400'
-                              : r.congestion_delta < 0
-                              ? 'text-emerald-600 dark:text-emerald-400'
-                              : 'text-slate-600 dark:text-slate-400'
-                          }`}
-                        >
-                          {r.congestion_delta > 0 && <ArrowUpRight className="w-3.5 h-3.5" />}
-                          {r.congestion_delta < 0 && <ArrowDownRight className="w-3.5 h-3.5" />}
-                          {r.congestion_delta === 0 && <ArrowRight className="w-3.5 h-3.5" />}
-                          {r.congestion_delta > 0 ? '+' : ''}{r.congestion_delta}%
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">--</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-slate-700 dark:text-slate-300">
-                      {r.predicted_speed_kmh ? `${r.predicted_speed_kmh} km/h` : '--'}
-                    </td>
-                    <td className="py-3 px-3">
-                      {r.forecast_available ? (
-                        <span className="text-[11px] text-emerald-700 dark:text-emerald-400 flex items-center gap-1 font-medium">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Forecast available
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-amber-700 dark:text-amber-400 flex items-center gap-1 font-medium">
-                          <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" /> {r.readiness_message || 'Insufficient verified history'}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedCity(r.city);
-                          setSelectedArea(r.area);
-                          window.scrollTo({ top: 0, behavior: 'smooth' });
-                        }}
-                        className={`px-3 py-1 rounded-md text-xs font-semibold border transition-colors ${
-                          isSelected
-                            ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
-                            : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
-                        }`}
-                      >
-                        {isSelected ? 'Active' : 'Inspect'}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* SECTION G: Forecast Accuracy and Data Quality (Collapsible) */}
-      <section className="bg-white dark:bg-card border border-slate-200 dark:border-border rounded-xl p-5 shadow-sm space-y-4">
-        <button
-          type="button"
-          onClick={() => setShowModelDetails(!showModelDetails)}
-          className="w-full flex items-center justify-between text-left"
-        >
-          <div className="flex items-center gap-3">
-            <span className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300">
-              <Gauge className="w-4 h-4" />
-            </span>
-            <div>
-              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
-                Forecast Accuracy and Data Quality
-              </h2>
-              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                Technical evaluation metrics, validation methodology, and data coverage.
-              </p>
-            </div>
-          </div>
-
-          <span className="text-slate-500 dark:text-slate-400 p-1">
-            {showModelDetails ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-          </span>
-        </button>
-
-        {/* Collapsible content */}
-        {showModelDetails && (
-          <div className="space-y-5 pt-4 border-t border-slate-200 dark:border-slate-800">
-            {/* Overview tiles */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5">
-                <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Active Algorithm (+{selectedHorizon}m)
-                </div>
-                <div className="text-sm font-bold text-slate-900 dark:text-white mt-1">
-                  {(() => {
-                    const name = modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`] || predictionData?.model_info?.model_name;
-                    return name === 'Persistence' ? 'Persistence Baseline' : (name || 'No verified model');
-                  })()}
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  {(() => {
-                    const name = modelStatus?.metadata?.selected_model_by_horizon?.[`${selectedHorizon}m`];
-                    return name === 'Persistence'
-                      ? 'Last observed congestion baseline'
-                      : name === 'HistoricalAvg'
-                        ? 'Train-only city, corridor, and local-hour average'
-                        : name
-                          ? 'Gradient-boosted residual forecast selected on validation'
-                          : 'No verified evaluation is available for this horizon';
-                  })()}
-                </div>
-              </div>
-              <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5">
-                <div className="text-xs text-slate-500 dark:text-slate-400">Training Dataset Volume</div>
-                <div className="text-sm font-bold text-slate-900 dark:text-white mt-1">
-                  {(modelStatus?.metadata?.total_dataset_rows ?? 0).toLocaleString()} verified records
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  {predictionData?.model_info?.paired_samples ?? predictionData?.data_status?.paired_samples ?? 0} paired samples for this corridor and horizon
-                </div>
-              </div>
-              <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5">
-                <div className="text-xs text-slate-500 dark:text-slate-400">Model Training Cutoff</div>
-                <div className="text-sm font-bold text-slate-900 dark:text-white mt-1">
-                  {formatDateTime(modelStatus?.metadata?.training_data_cutoff_timestamp)}
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Zero lookahead / future target leakage</div>
-              </div>
-            </div>
-
-            {/* Benchmark Table */}
-            <div>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  Held-Out Test Set Performance Comparison
-                </h3>
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Evaluated on chronological test partition (20% unseen data)
-                </span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-                  <thead className="bg-slate-50 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                    <tr>
-                      <th className="py-2.5 px-3">Horizon</th>
-                      <th className="py-2.5 px-3">Active Production Model</th>
-                      <th className="py-2.5 px-3">Persistence MAE (RMSE)</th>
-                      <th className="py-2.5 px-3">Random Forest MAE (RMSE)</th>
-                      <th className="py-2.5 px-3">HistGradBoost MAE (RMSE)</th>
-                      <th className="py-2.5 px-3">Historical Avg MAE (RMSE)</th>
-                      <th className="py-2.5 px-3">Selection Decision</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {[15, 30, 60].map(h => {
-                      const meta = modelStatus?.metadata?.evaluation_by_horizon?.[`${h}m`];
-                      const tm = meta?.test_metrics;
-                      const selectedName = meta?.selected_model_name || modelStatus?.metadata?.selected_model_by_horizon?.[`${h}m`];
-                      const pMae = tm?.['Persistence']?.mae_percent ?? meta?.persistence_baseline?.mae_percent;
-                      const pRmse = tm?.['Persistence']?.rmse_percent ?? meta?.persistence_baseline?.rmse_percent;
-                      const rfMae = tm?.['RandomForest']?.mae_percent ?? meta?.model_metrics?.mae_percent;
-                      const rfRmse = tm?.['RandomForest']?.rmse_percent ?? meta?.model_metrics?.rmse_percent;
-                      const hgbMae = tm?.['HistGradientBoosting']?.mae_percent;
-                      const hgbRmse = tm?.['HistGradientBoosting']?.rmse_percent;
-                      const haMae = tm?.['HistoricalAvg']?.mae_percent ?? meta?.historical_avg_baseline?.mae_percent;
-                      const haRmse = tm?.['HistoricalAvg']?.rmse_percent ?? meta?.historical_avg_baseline?.rmse_percent;
-
-                      return (
-                        <tr key={h} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                          <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">+{h} Minutes</td>
-                          <td className="py-2.5 px-3">
-                            {meta?.supported && selectedName ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                                <CheckCircle2 className="w-3 h-3" />
-                                {selectedName === 'Persistence' ? 'Persistence Baseline' : selectedName}
-                              </span>
-                            ) : <span className="text-slate-500">Not evaluated</span>}
-                          </td>
-                          <td className="py-2.5 px-3 font-medium text-emerald-700 dark:text-emerald-400">
-                            {pMae !== undefined ? `${pMae}% (${pRmse}%)` : '--'}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300">
-                            {rfMae !== undefined ? `${rfMae}% (${rfRmse}%)` : '--'}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300">
-                            {hgbMae !== undefined ? `${hgbMae}% (${hgbRmse}%)` : '--'}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-500">
-                            {haMae !== undefined ? `${haMae}% (${haRmse}%)` : '--'}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                              {meta?.selection_rationale || 'No verified evaluation is available for this horizon.'}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Model Limitations & Integrity Disclosure */}
-            <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-4 text-xs space-y-2 text-slate-600 dark:text-slate-400">
-              <div className="text-slate-800 dark:text-slate-200 font-semibold flex items-center gap-1.5 mb-1">
-                <Info className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" /> Operational Boundaries & Integrity Disclosures
-              </div>
-              <p>
-                • <strong>Model Selection</strong>: Each horizon selects a model only when its validation MAE beats the best baseline. The held-out chronological test set is reported separately and is not used for model selection. When a baseline is served, the reason is shown with the forecast.
-              </p>
-              <p>
-                • <strong>Dynamic Live Inference</strong>: Appending new traffic records to the dataset immediately updates live prediction inputs via an mtime-invalidated memory cache without triggering costly retraining on every request or frontend refresh.
-              </p>
-              <p>
-                • <strong>Readiness Gate</strong>: A corridor needs at least 14 days of verified history and 80% polling coverage, plus horizon-specific future pairs. Missing readings are not filled.
-              </p>
-            </div>
-          </div>
-        )}
       </section>
 
       {/* Dataset Pipeline Transparency Card */}

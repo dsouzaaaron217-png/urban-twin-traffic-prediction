@@ -13,15 +13,9 @@ import { Maximize2, Minimize2 } from 'lucide-react';
 import type { Location, PlannedRoute } from '@/types/traffic';
 import { getTrafficColor, getTrafficCondition } from '@/lib/traffic-utils';
 
-export const ROUTE_COLORS = [
-  '#16a34a', // Emerald Green - Recommended / Fastest
-  '#2563eb', // Blue - Alternative 1
-  '#9333ea', // Purple - Alternative 2
-  '#d97706', // Amber - Shortest / Alternative 3
-  '#0891b2', // Cyan
-];
+import { ROUTE_COLORS } from './route-map-constants';
 
-type Props = {
+export type RouteMapProps = {
   source: Location | null;
   destination: Location | null;
   routes: PlannedRoute[];
@@ -128,7 +122,7 @@ export function RouteMap({
   onSelectSegment,
   isExpanded = false,
   onToggleExpand,
-}: Props) {
+}: RouteMapProps) {
   // Center map on source/dest midpoint, or source, or Pune center
   const initialCenter: [number, number] = useMemo(() => {
     if (source && destination) {

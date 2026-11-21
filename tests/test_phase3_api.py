@@ -189,7 +189,8 @@ def test_alembic_upgrade_fresh_and_existing_sqlite_preserves_observations(tmp_pa
     )
     assert result.returncode == 0, result.stdout + result.stderr
     import sqlite3
-    with sqlite3.connect(db_path) as db:
+    from contextlib import closing
+    with closing(sqlite3.connect(db_path)) as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"observations", "forecast_records", "alembic_version"}.issubset(tables)
         count = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]

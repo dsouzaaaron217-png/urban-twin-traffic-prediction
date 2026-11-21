@@ -44,7 +44,8 @@ import {
   getTrafficLevel,
   CONGESTION_THRESHOLDS,
 } from '@/lib/traffic-utils';
-import { RouteMap, ROUTE_COLORS } from './RouteMap';
+import { RouteMapView as RouteMap } from './RouteMapView';
+import { ROUTE_COLORS } from './route-map-constants';
 
 // Default Pune Coordinates for fallback map centering
 const PUNE_DEFAULT_LOCATION: Location = {
@@ -382,8 +383,8 @@ export function RoutePlannerPage() {
           activeSource = places[0];
           setSource(activeSource);
         }
-      } catch (err) {
-        console.warn('Auto-geocoding source failed:', err);
+      } catch {
+        // Keep provider failures in the visible route form state; do not log search details.
       }
     }
 
@@ -394,8 +395,8 @@ export function RoutePlannerPage() {
           activeDest = places[0];
           setDestination(activeDest);
         }
-      } catch (err) {
-        console.warn('Auto-geocoding destination failed:', err);
+      } catch {
+        // Keep provider failures in the visible route form state; do not log search details.
       }
     }
 

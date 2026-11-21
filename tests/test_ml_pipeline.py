@@ -261,11 +261,12 @@ def test_unmonitored_route_segment_does_not_count_as_forecast_coverage():
 
 
 def test_verified_loader_keeps_only_verified_provenance(tmp_path, monkeypatch):
+    from contextlib import closing
     import sqlite3
     import services.phase1_pipeline as phase1
     database = tmp_path / "observations.sqlite3"
     monkeypatch.setattr(phase1, "DB_PATH", database)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("""CREATE TABLE observations (
             timestamp_utc TEXT, city TEXT, area TEXT, latitude REAL, longitude REAL,
             current_speed_kmh REAL, free_flow_speed_kmh REAL,

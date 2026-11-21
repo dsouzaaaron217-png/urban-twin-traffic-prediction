@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -26,7 +27,7 @@ def test_observations_are_utc_idempotent_and_keep_provenance(phase1_db):
     row = sample()
     assert pipeline.record_observation(row, "tomtom", run_id)
     assert not pipeline.record_observation(row, "tomtom", run_id)
-    with sqlite3.connect(phase1_db) as db:
+    with closing(sqlite3.connect(phase1_db)) as db:
         saved = db.execute("SELECT timestamp_utc,city,source,quality,run_id FROM observations").fetchone()
     assert saved == ("2026-11-01T04:30:00+00:00", "Mangaluru", "tomtom", "validated", run_id)
 
@@ -55,7 +56,7 @@ def test_google_spot_check_is_disabled_without_consuming_budget(phase1_db):
     with pytest.raises(RuntimeError, match="disabled"):
         source.fetch_spot_check("origin", "destination")
     assert not called
-    with sqlite3.connect(phase1_db) as db:
+    with closing(sqlite3.connect(phase1_db)) as db:
         assert db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='daily_budget'").fetchone()[0] == 0
 
 
@@ -75,7 +76,7 @@ def test_google_spot_check_uses_budget_and_does_not_store_by_default(phase1_db):
     assert result["store"] is False
     assert result["source"] == "google_routes"
     assert len(calls) == 1
-    with sqlite3.connect(phase1_db) as db:
+    with closing(sqlite3.connect(phase1_db)) as db:
         assert db.execute("SELECT used FROM daily_budget WHERE provider='google_routes'").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 0
 
@@ -83,7 +84,7 @@ def test_google_spot_check_uses_budget_and_does_not_store_by_default(phase1_db):
 def test_restart_marks_open_runs_interrupted(phase1_db):
     run_id = pipeline.start_run("tomtom")
     assert pipeline.recover_interrupted_runs() == 1
-    with sqlite3.connect(phase1_db) as db:
+    with closing(sqlite3.connect(phase1_db)) as db:
         assert db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()[0] == "interrupted"
 
 

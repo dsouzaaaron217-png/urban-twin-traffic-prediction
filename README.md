@@ -1,4 +1,19 @@
+
 # TrafficWatch
+
+## Quick start (Docker Compose)
+
+With Docker Desktop installed and running, from the repository root run:
+
+```powershell
+docker compose up --build
+```
+
+Open <http://localhost:8080> for the frontend and <http://localhost:8000/health> for backend health. Stop the stack with `Ctrl+C`; use `docker compose down` to stop it later. The SQLite database persists in the `trafficwatch-db` volume. TomTom collection is disabled by default; set `ENABLE_TOMTOM_SCHEDULER=true` and a valid `TOMTOM_API_KEY` in the local `.env` to enable 15-minute collection. The daily request budget defaults to 500. Model retraining stays disabled. Place search needs a backend `TOMTOM_API_KEY`; set it in your local ignored `.env` before starting Compose. Never add secrets to frontend variables or commit `.env`.
+
+For a local non-container setup, install the pinned backend dependencies with `python -m pip install -r requirements.lock`; then start the API with `python -m uvicorn main:app --host 127.0.0.1 --port 8000`. In a second terminal, run `cd fronted`, `bun install --frozen-lockfile`, and `bun run dev -- --host 127.0.0.1 --port 8080`. Frontend checks are `bun run lint`, `bun run typecheck`, `bun run test`, and `bun run build`.
+
+See [docs/PRD.md](docs/PRD.md), [docs/TRD.md](docs/TRD.md), and [docs/DATA_SOURCE_TERMS.md](docs/DATA_SOURCE_TERMS.md) for implemented scope, architecture, provider restrictions, and known limitations. The mocked Playwright browser flow and Compose files are implemented. The browser test passes locally; Docker Compose could not be run because Docker is unavailable in the current environment.
 
 **Real-Time Traffic Monitoring, Route Planning & Predictive Forecasting Platform**
 
@@ -297,7 +312,7 @@ Backend TomTom GET requests reserve usage through a local SQLite quota guard bef
 | Routing | 20,000 | Unverified | Disabled |
 | Traffic Maps | 20,000 | Unverified | Disabled |
 
-The Traffic Flow and Search starting usage is seeded when the quota database is first initialized. New UTC months start with fresh counters. Routing and Traffic Maps remain blocked until their starting usage is checked in the TomTom portal and the local baseline is configured. OpenStreetMap Nominatim requests do not use the TomTom quota.
+The Traffic Flow and Search starting usage is seeded when the quota database is first initialized. New UTC months start with fresh counters. Routing and Traffic Maps remain blocked until their starting usage is checked in the TomTom portal and the local baseline is configured. Public Nominatim is not queried by the application; place suggestions require the backend TomTom integration.
 
 Phase 3 API access, migrations, database URL configuration, health/metrics, and pagination are documented in [docs/PHASE3_BACKEND.md](docs/PHASE3_BACKEND.md). Admin write endpoints remain disabled until a private `API_KEY` is configured in the local `.env` file.
 
