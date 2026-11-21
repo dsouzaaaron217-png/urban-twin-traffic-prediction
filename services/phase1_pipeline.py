@@ -111,7 +111,17 @@ def resilient_call(provider: str, operation: Callable[[], Any], attempts: int = 
 
 def connect():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH, timeout=20)
+    configured_url = os.getenv("DATABASE_URL")
+    if configured_url and not configured_url.startswith("sqlite:"):
+        return _connect_postgres(configured_url)
+    sqlite_path = DB_PATH
+    if configured_url and configured_url.startswith("sqlite:"):
+        raw_path = configured_url.removeprefix("sqlite:///").removeprefix("sqlite://")
+        sqlite_path = Path(raw_path)
+        if not sqlite_path.is_absolute():
+            sqlite_path = Path(__file__).resolve().parents[1] / sqlite_path
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(sqlite_path, timeout=20)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=20000")
     db.executescript("""
@@ -125,8 +135,122 @@ def connect():
         PRIMARY KEY(corridor,timestamp_utc));
       CREATE TABLE IF NOT EXISTS daily_budget(day TEXT NOT NULL, provider TEXT NOT NULL, used INTEGER NOT NULL, budget INTEGER NOT NULL, PRIMARY KEY(day,provider));
       CREATE TABLE IF NOT EXISTS breaker(provider TEXT PRIMARY KEY, failures INTEGER NOT NULL, open_until TEXT);
+      CREATE TABLE IF NOT EXISTS forecast_records(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT NOT NULL, area TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,
+        origin_timestamp TEXT NOT NULL, target_timestamp TEXT NOT NULL, generated_at TEXT NOT NULL,
+        predicted_congestion_percent REAL NOT NULL, model_version TEXT,
+        data_source TEXT NOT NULL, data_quality TEXT NOT NULL,
+        UNIQUE(city,area,horizon_minutes,origin_timestamp));
     """)
     return db
+
+
+class _PostgresCompat:
+    """Bridge the existing Phase 1 DB-API calls to SQLAlchemy/psycopg."""
+    def __init__(self, connection):
+        self.connection = connection
+
+    def execute(self, statement: str, parameters=()):
+        ignored = "INSERT OR IGNORE INTO" in statement.upper()
+        statement = statement.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+        statement = statement.replace("?", "%s")
+        if ignored and "ON CONFLICT" not in statement.upper():
+            statement = statement.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        return self.connection.exec_driver_sql(statement, parameters)
+
+    def executescript(self, script: str):
+        for statement in script.split(";"):
+            if statement.strip():
+                self.execute(statement)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.connection.commit()
+        else:
+            self.connection.rollback()
+        self.connection.close()
+
+    def close(self):
+        self.connection.close()
+
+
+_pg_engine = None
+_pg_engine_url: str | None = None
+
+
+def _connect_postgres(url: str):
+    global _pg_engine, _pg_engine_url
+    try:
+        from sqlalchemy import create_engine
+        from services.db_schema import metadata
+    except ImportError as exc:
+        raise RuntimeError("PostgreSQL support requires SQLAlchemy and psycopg; install requirements.txt") from exc
+    normalized = url.replace("postgresql://", "postgresql+psycopg://", 1) if url.startswith("postgresql://") else url
+    if _pg_engine is None or _pg_engine_url != normalized:
+        _pg_engine = create_engine(normalized, pool_pre_ping=True)
+        _pg_engine_url = normalized
+    metadata.create_all(_pg_engine, checkfirst=True)
+    return _PostgresCompat(_pg_engine.connect())
+
+
+def record_forecast(city: str, area: str, horizon_minutes: int, origin_timestamp: str,
+                    target_timestamp: str, generated_at: str, predicted_congestion_percent: float,
+                    model_version: str | None, data_source: str, data_quality: str) -> bool:
+    """Persist a forecast for later honest forecast-versus-observation evaluation."""
+    with closing(connect()) as db, db:
+        cursor = db.execute("""INSERT OR IGNORE INTO forecast_records
+          (city,area,horizon_minutes,origin_timestamp,target_timestamp,generated_at,
+           predicted_congestion_percent,model_version,data_source,data_quality)
+          VALUES(?,?,?,?,?,?,?,?,?,?)""",
+          (city, area, horizon_minutes, origin_timestamp, target_timestamp, generated_at,
+           predicted_congestion_percent, model_version, data_source, data_quality))
+    return cursor.rowcount == 1
+
+
+def forecast_actual_history(city: str | None = None, area: str | None = None,
+                           limit: int = 100, offset: int = 0) -> dict:
+    """Return persisted forecasts and nearest same-corridor observations within one poll step."""
+    where = []
+    values: list[Any] = []
+    if city:
+        where.append("f.city=?")
+        values.append(city)
+    if area:
+        where.append("f.area=?")
+        values.append(area)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with closing(connect()) as db:
+        total = db.execute("SELECT COUNT(*) FROM forecast_records f" + clause, values).fetchone()[0]
+        rows = db.execute("""SELECT f.id,f.city,f.area,f.horizon_minutes,f.origin_timestamp,
+          f.target_timestamp,f.generated_at,f.predicted_congestion_percent,f.model_version,
+          f.data_source,f.data_quality FROM forecast_records f""" + clause +
+          " ORDER BY f.generated_at DESC LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
+        fields = ("id", "city", "area", "horizon_minutes", "origin_timestamp", "target_timestamp",
+                  "generated_at", "predicted_congestion_percent", "model_version", "data_source", "data_quality")
+        result_items = []
+        for row in rows:
+            item = dict(zip(fields, row))
+            target = datetime.fromisoformat(str(item["target_timestamp"]).replace("Z", "+00:00"))
+            lower = (target - timedelta(minutes=15)).astimezone(timezone.utc).isoformat()
+            upper = (target + timedelta(minutes=15)).astimezone(timezone.utc).isoformat()
+            candidates = db.execute("""SELECT timestamp_utc,congestion_percent FROM observations
+                WHERE city=? AND area=? AND timestamp_utc>=? AND timestamp_utc<=?""",
+                (item["city"], item["area"], lower, upper)).fetchall()
+            nearest = None
+            for actual_time, actual_value in candidates:
+                actual_dt = datetime.fromisoformat(str(actual_time).replace("Z", "+00:00"))
+                delta = abs((actual_dt - target).total_seconds())
+                if nearest is None or delta < nearest[0]:
+                    nearest = (delta, actual_time, actual_value)
+            item["actual_timestamp"] = nearest[1] if nearest else None
+            item["actual_congestion_percent"] = nearest[2] if nearest else None
+            result_items.append(item)
+    return {"items": result_items, "total": total,
+            "limit": limit, "offset": offset}
 
 
 def utc_timestamp(value: Any = None) -> str:

@@ -10,7 +10,9 @@ client = TestClient(app)
 def test_health_endpoint():
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "healthy"}
+    assert resp.json()["status"] in {"healthy", "degraded"}
+    assert resp.json()["live"] is True
+    assert "ready" in resp.json()
 
 
 def test_model_status_endpoint():
@@ -127,7 +129,9 @@ def test_hotspots_endpoint(mock_get):
         assert "delay_seconds" in h
 
 
-def test_saved_locations_crud():
+def test_saved_locations_crud(monkeypatch):
+    monkeypatch.setenv("API_KEY", "phase3-test-admin-key")
+    headers = {"X-API-Key": "phase3-test-admin-key"}
     # 1. GET initial list
     resp = client.get("/api/saved-locations")
     assert resp.status_code == 200
@@ -145,7 +149,7 @@ def test_saved_locations_crud():
         "latitude": 19.0657,
         "longitude": 72.8687,
     }
-    resp = client.post("/api/saved-locations", json=new_loc)
+    resp = client.post("/api/saved-locations", json=new_loc, headers=headers)
     assert resp.status_code == 200
     created = resp.json()["location"]
     assert created["name"] == "Bandra Kurla Office"
@@ -154,7 +158,7 @@ def test_saved_locations_crud():
     loc_id = created["id"]
 
     # 3. Duplicate check - same coordinates
-    resp = client.post("/api/saved-locations", json=new_loc)
+    resp = client.post("/api/saved-locations", json=new_loc, headers=headers)
     assert resp.status_code == 409
     assert "already saved" in resp.json()["detail"].lower()
 
@@ -163,19 +167,19 @@ def test_saved_locations_crud():
         "name": "BKC Headquarters",
         "label": "Office",
     }
-    resp = client.put(f"/api/saved-locations/{loc_id}", json=update_payload)
+    resp = client.put(f"/api/saved-locations/{loc_id}", json=update_payload, headers=headers)
     assert resp.status_code == 200
     updated = resp.json()["location"]
     assert updated["name"] == "BKC Headquarters"
     assert updated["label"] == "Office"
 
     # 5. DELETE location
-    resp = client.delete(f"/api/saved-locations/{loc_id}")
+    resp = client.delete(f"/api/saved-locations/{loc_id}", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["deleted_id"] == loc_id
 
     # 6. Verify deleted
-    resp = client.delete(f"/api/saved-locations/{loc_id}")
+    resp = client.delete(f"/api/saved-locations/{loc_id}", headers=headers)
     assert resp.status_code == 404
 
 

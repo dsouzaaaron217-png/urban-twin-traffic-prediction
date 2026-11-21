@@ -9,6 +9,9 @@
 fastapi>=0.115.0,<=0.143.1
 uvicorn[standard]>=0.30.0,<=0.54.0
 pydantic>=2.8.0,<=2.14.1
+SQLAlchemy>=2.0.30,<3.0.0
+alembic>=1.13.2,<2.0.0
+psycopg[binary]>=3.2.1,<4.0.0
 
 # HTTP Client & API Integrations
 requests>=2.31.0,<=2.34.2

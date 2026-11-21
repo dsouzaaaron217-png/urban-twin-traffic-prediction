@@ -299,6 +299,8 @@ Backend TomTom GET requests reserve usage through a local SQLite quota guard bef
 
 The Traffic Flow and Search starting usage is seeded when the quota database is first initialized. New UTC months start with fresh counters. Routing and Traffic Maps remain blocked until their starting usage is checked in the TomTom portal and the local baseline is configured. OpenStreetMap Nominatim requests do not use the TomTom quota.
 
+Phase 3 API access, migrations, database URL configuration, health/metrics, and pagination are documented in [docs/PHASE3_BACKEND.md](docs/PHASE3_BACKEND.md). Admin write endpoints remain disabled until a private `API_KEY` is configured in the local `.env` file.
+
 ### Frontend Configuration (`fronted/.env`)
 Navigate to `fronted/` and configure `.env`:
 ```powershell

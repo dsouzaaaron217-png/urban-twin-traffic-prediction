@@ -14,7 +14,6 @@ import type {
   RoutePlanResponse,
   RoutePreference,
   SavedLocation,
-  SavedLocationsResponse,
   AnalyticsFilterOptions,
   AnalyticsOverviewResponse,
   PaginatedRecordsResponse,
@@ -241,8 +240,8 @@ export async function getHistory(
   params = new URLSearchParams(),
   signal?: AbortSignal
 ): Promise<TrafficReading[]> {
-  const rows = await request<TrafficReading[]>(`/api/traffic/history?${params.toString()}`, signal);
-  if (!Array.isArray(rows)) return [];
+  const payload = await request<TrafficReading[] | { items?: TrafficReading[] }>(`/api/traffic/history?${params.toString()}`, signal);
+  const rows = Array.isArray(payload) ? payload : payload?.items ?? [];
 
   return rows.map(row => ({
     ...row,
@@ -375,28 +374,20 @@ export async function addMonitoredLocation(location: Location, name?: string): P
   });
 }
 
-/** Fetches personal saved locations with localStorage fallback */
-export async function getSavedLocations(signal?: AbortSignal): Promise<SavedLocation[]> {
-  try {
-    const payload = await request<SavedLocationsResponse>('/api/saved-locations', signal);
-    if (payload && Array.isArray(payload.locations)) {
-      try {
-        localStorage.setItem('trafficwatch-saved-locations', JSON.stringify(payload.locations));
-      } catch {
-        /* storage disabled */
-      }
-      return payload.locations;
-    }
-  } catch (err) {
-    console.warn('Backend /api/saved-locations failed, using localStorage fallback:', err);
-  }
+const SAVED_LOCATIONS_KEY = 'trafficwatch-saved-locations';
 
-  // Fallback to localStorage
+function readSavedLocations(): SavedLocation[] {
   try {
-    const raw = localStorage.getItem('trafficwatch-saved-locations');
+    const raw = localStorage.getItem(SAVED_LOCATIONS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is SavedLocation =>
+            item && typeof item.id === 'string' && typeof item.name === 'string' &&
+            typeof item.latitude === 'number' && typeof item.longitude === 'number'
+        );
+      }
     }
   } catch {
     /* empty */
@@ -404,82 +395,65 @@ export async function getSavedLocations(signal?: AbortSignal): Promise<SavedLoca
   return [];
 }
 
-/** Creates a new personal saved location */
+function writeSavedLocations(locations: SavedLocation[]): void {
+  try {
+    localStorage.setItem(SAVED_LOCATIONS_KEY, JSON.stringify(locations));
+  } catch {
+    throw new Error('Browser storage is unavailable. Saved places could not be stored.');
+  }
+}
+
+/** Personal saved places stay in browser storage; they do not need admin API access. */
+export async function getSavedLocations(_signal?: AbortSignal): Promise<SavedLocation[]> {
+  return readSavedLocations();
+}
+
+/** Creates a personal saved location in browser storage. */
 export async function createSavedLocation(
   data: {
     name: string;
-    label?: string;
+    label?: SavedLocation['label'];
     address?: string;
     city?: string;
     area?: string;
     latitude: number;
     longitude: number;
   },
-  signal?: AbortSignal
+  _signal?: AbortSignal
 ): Promise<SavedLocation> {
-  const result = await request<{ message: string; location: SavedLocation; locations: SavedLocation[] }>(
-    '/api/saved-locations',
-    signal,
-    {
-      method: 'POST',
-      body: data,
-    }
-  );
-
-  if (result?.locations) {
-    try {
-      localStorage.setItem('trafficwatch-saved-locations', JSON.stringify(result.locations));
-    } catch {
-      /* storage disabled */
-    }
-  }
-
-  return result.location;
+  const now = new Date().toISOString();
+  const location: SavedLocation = {
+    ...data,
+    area: data.area || data.address || data.name,
+    address: data.address || data.area || data.name,
+    city: data.city || 'Unknown',
+    label: data.label || 'Other',
+    id: globalThis.crypto?.randomUUID?.() || `saved-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    created_at: now,
+    updated_at: now,
+  };
+  writeSavedLocations([location, ...readSavedLocations()]);
+  return location;
 }
 
-/** Updates an existing personal saved location */
+/** Updates a personal saved location in browser storage. */
 export async function updateSavedLocation(
   id: string,
   data: Partial<SavedLocation>,
-  signal?: AbortSignal
+  _signal?: AbortSignal
 ): Promise<SavedLocation> {
-  const result = await request<{ message: string; location: SavedLocation; locations: SavedLocation[] }>(
-    `/api/saved-locations/${id}`,
-    signal,
-    {
-      method: 'PUT',
-      body: data,
-    }
-  );
-
-  if (result?.locations) {
-    try {
-      localStorage.setItem('trafficwatch-saved-locations', JSON.stringify(result.locations));
-    } catch {
-      /* storage disabled */
-    }
-  }
-
-  return result.location;
+  const locations = readSavedLocations();
+  const index = locations.findIndex(location => location.id === id);
+  if (index < 0) throw new Error('Saved location was not found.');
+  const updated = { ...locations[index]!, ...data, id, updated_at: new Date().toISOString() };
+  locations[index] = updated;
+  writeSavedLocations(locations);
+  return updated;
 }
 
-/** Deletes a personal saved location */
-export async function deleteSavedLocation(id: string, signal?: AbortSignal): Promise<void> {
-  const result = await request<{ message: string; deleted_id: string; locations: SavedLocation[] }>(
-    `/api/saved-locations/${id}`,
-    signal,
-    {
-      method: 'DELETE',
-    }
-  );
-
-  if (result?.locations) {
-    try {
-      localStorage.setItem('trafficwatch-saved-locations', JSON.stringify(result.locations));
-    } catch {
-      /* storage disabled */
-    }
-  }
+/** Deletes a personal saved location from browser storage. */
+export async function deleteSavedLocation(id: string, _signal?: AbortSignal): Promise<void> {
+  writeSavedLocations(readSavedLocations().filter(location => location.id !== id));
 }
 
 /** Queries live traffic conditions near a specific saved location */

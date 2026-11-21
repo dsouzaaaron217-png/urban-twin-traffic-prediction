@@ -13,12 +13,23 @@ from contextlib import asynccontextmanager
 import requests
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, Depends
 from fastapi import Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+# Local settings and schema utilities
+from settings import settings
+from schemas import (
+    ErrorResponse, PageParams, PaginatedResponse, TrafficCurrentResponse,
+    ForecastApiResponse, AlertsResponse,
+)
+from auth import require_admin
+from phase3_http import request_middleware, request_metrics, error_payload, cached_read, invalidate_read_cache
 
 from services.routing_service import calculate_routes_tomtom, _fetch_tomtom_flow
 from services.tomtom_quota import tomtom_get
@@ -87,6 +98,7 @@ def load_monitored_locations():
 def save_monitored_locations(locations):
     with open(LOCATIONS_FILE, "w", encoding="utf-8") as file:
         json.dump(locations, file, indent=4)
+    invalidate_read_cache()
 
 DEFAULT_SAVED_LOCATIONS = [
     {
@@ -131,6 +143,7 @@ def save_saved_locations(locations):
     with saved_locations_lock:
         with open(SAVED_LOCATIONS_FILE, "w", encoding="utf-8") as file:
             json.dump(locations, file, indent=4)
+    invalidate_read_cache()
 
 # Initial monitored road location: central Pune
 PUNE_LAT = 18.5204
@@ -160,6 +173,7 @@ def save_traffic_reading(reading):
         process_new_reading(reading)
     except Exception as exc:
         print(f"Warning: Cleaned data pipeline incremental update error: {exc}")
+    invalidate_read_cache()
 
 
 # -----------------------------
@@ -329,6 +343,7 @@ def scheduled_model_retraining():
             print(f"Scheduled model retraining blocked: {result.get('reason')}")
             return result
         get_predictor(force_reload=True)
+        invalidate_read_cache()
         return result
     except Exception as exc:
         print(f"Scheduled model retraining failed: {exc}")
@@ -396,33 +411,54 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_origins=[
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
 )
+app.middleware("http")(request_middleware)
 
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_handler(request: Request, exc: StarletteHTTPException):
+    message = exc.detail if isinstance(exc.detail, str) else "The request could not be completed."
+    return JSONResponse(status_code=exc.status_code, content=error_payload("http_error", message), headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    fields = [{"location": item.get("loc", []), "code": item.get("type", "invalid"), "message": item.get("msg", "Invalid value")} for item in exc.errors()]
+    return JSONResponse(status_code=422, content=error_payload("validation_error", "Request validation failed.", {"fields": fields}))
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception):
+    import logging
+    logging.getLogger("trafficwatch.errors").exception("Unhandled request error", extra={"request_id": getattr(request.state, "request_id", None)})
+    return JSONResponse(status_code=500, content=error_payload("internal_error", "An unexpected server error occurred."))
 
 
 # -----------------------------
 # API endpoints
 # -----------------------------
 
+class MonitoredLocationCreate(BaseModel):
+    name: str = Field(default="Monitored location", min_length=1, max_length=160)
+    city: str = Field(default="Unknown", min_length=1, max_length=100)
+    area: Optional[str] = Field(default=None, max_length=160)
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+
+
 @app.get("/api/monitored-locations")
+@cached_read(5)
 def get_monitored_locations():
     return {"locations": load_monitored_locations()}
 
 
 @app.post("/api/monitored-locations")
-def add_monitored_location(location: dict):
+def add_monitored_location(payload: MonitoredLocationCreate, role: str = Depends(require_admin)):
+    location = payload.model_dump(exclude_none=True)
     locations = load_monitored_locations()
 
     latitude = location.get("latitude")
@@ -500,12 +536,23 @@ class SavedLocationUpdate(BaseModel):
 
 
 @app.get("/api/saved-locations")
-def get_saved_locations():
-    return {"locations": load_saved_locations()}
+@cached_read(5)
+def get_saved_locations(params: PageParams = Depends()):
+    all_locations = load_saved_locations()
+    start = params.offset
+    end = start + params.limit
+    paginated = all_locations[start:end]
+    return {
+        "locations": all_locations,
+        "items": paginated,
+        "total": len(all_locations),
+        "limit": params.limit,
+        "offset": params.offset,
+    }
 
 
 @app.post("/api/saved-locations")
-def add_saved_location(payload: SavedLocationCreate):
+def add_saved_location(payload: SavedLocationCreate, role: str = Depends(require_admin)):
     locations = load_saved_locations()
 
     clean_name = payload.name.strip()
@@ -558,7 +605,7 @@ def add_saved_location(payload: SavedLocationCreate):
 
 
 @app.put("/api/saved-locations/{location_id}")
-def update_saved_location(location_id: str, payload: SavedLocationUpdate):
+def update_saved_location(location_id: str, payload: SavedLocationUpdate, role: str = Depends(require_admin)):
     locations = load_saved_locations()
 
     target_idx = None
@@ -615,7 +662,7 @@ def update_saved_location(location_id: str, payload: SavedLocationUpdate):
 
 
 @app.delete("/api/saved-locations/{location_id}")
-def delete_saved_location(location_id: str):
+def delete_saved_location(location_id: str, role: str = Depends(require_admin)):
     locations = load_saved_locations()
 
     target = None
@@ -645,12 +692,89 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    components = {"process": "healthy", "phase1_store": "healthy"}
+    try:
+        from services.phase1_pipeline import connect
+        with connect() as db:
+            db.execute("SELECT 1")
+    except Exception:
+        components["phase1_store"] = "unavailable"
+    components["scheduler"] = "running" if scheduler.running else "stopped"
+    healthy = components["phase1_store"] == "healthy"
+    return {"status": "healthy" if healthy else "degraded", "live": True, "ready": healthy, "components": components}
+
+
+@app.get("/metrics")
+def metrics():
+    return request_metrics()
 
 
 @app.get("/api/v1/data/readiness")
+@cached_read(5)
 def get_data_readiness():
     return get_phase1_readiness()
+
+
+@app.get("/api/v1/traffic/current", response_model=TrafficCurrentResponse)
+@cached_read(5)
+def current_state(city: str | None = None, area: str | None = None,
+                  limit: int = Query(default=100, ge=1, le=500),
+                  offset: int = Query(default=0, ge=0)):
+    """Latest persisted Phase 1 observation per corridor; never calls a live provider."""
+    from services.phase1_pipeline import connect
+    db = connect()
+    try:
+        filters, values = [], []
+        if city:
+            filters.append("o.city = ?")
+            values.append(city)
+        if area:
+            filters.append("o.area = ?")
+            values.append(area)
+        where = (" WHERE " + " AND ".join(filters)) if filters else ""
+        total = db.execute("SELECT COUNT(*) FROM (SELECT corridor FROM observations o" + where + " GROUP BY corridor)", values).fetchone()[0]
+        rows = db.execute("""SELECT o.timestamp_utc,o.city,o.area,o.latitude,o.longitude,
+            o.current_speed_kmh,o.free_flow_speed_kmh,o.congestion_percent,o.source,o.quality
+            FROM observations o JOIN (SELECT corridor,MAX(timestamp_utc) AS latest FROM observations GROUP BY corridor) latest
+            ON latest.corridor=o.corridor AND latest.latest=o.timestamp_utc""" + where +
+            " ORDER BY o.city,o.area LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
+    finally:
+        db.close()
+    keys = ("timestamp", "city", "area", "latitude", "longitude", "current_speed_kmh", "free_flow_speed_kmh", "congestion_percent", "source", "quality")
+    return {"generated_at": datetime.now(timezone.utc), "items": [dict(zip(keys, row)) for row in rows],
+            "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/forecasts/{city}/{area}", response_model=ForecastApiResponse)
+def forecast_by_location(city: str, area: str, horizon_minutes: int = Query(default=15, ge=15, le=60)):
+    """Versioned typed wrapper over the Phase 2 forecast path."""
+    if horizon_minutes not in (15, 30, 60):
+        raise HTTPException(status_code=400, detail="Horizon must be 15, 30, or 60 minutes.")
+    result = get_traffic_predictions(city, area, None, None, horizon_minutes)
+    forecast = result.get("forecast")
+    return {
+        "city": city, "area": area, "horizon_minutes": horizon_minutes,
+        "data_quality": (forecast or {}).get("data_quality", {
+            "source": (result.get("live_traffic") or {}).get("data_source"),
+            "status": (result.get("data_status") or {}).get("readiness_note", "insufficient_history"),
+        }),
+        "model_version": (forecast or {}).get("model_version"),
+        "generated_at": (forecast or {}).get("generated_at") or result.get("generated_at") or datetime.now(timezone.utc),
+        "forecast_available": bool(result.get("forecast_available")),
+        "forecast": forecast if result.get("forecast_available") else None,
+        "fallback_model": (forecast or {}).get("model_name") if (forecast or {}).get("fallback_reason") else None,
+        "fallback_reason": (forecast or {}).get("fallback_reason"),
+        "reason": result.get("message"),
+    }
+
+
+@app.get("/api/v1/forecasts/actuals")
+@cached_read(5)
+def forecast_actuals(city: str | None = None, area: str | None = None,
+                     limit: int = Query(default=100, ge=1, le=500),
+                     offset: int = Query(default=0, ge=0)):
+    from services.phase1_pipeline import forecast_actual_history
+    return forecast_actual_history(city=city, area=area, limit=limit, offset=offset)
 
 
 
@@ -1128,16 +1252,19 @@ def get_traffic_hotspots(
 
 
 @app.get("/api/traffic/history")
+@cached_read(5)
 def get_traffic_history(
     city: str | None = Query(default=None),
     area: str | None = Query(default=None),
     start_date: str | None = Query(default=None),
     end_date: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
     import csv
 
     if not CSV_FILE.exists():
-        return []
+        return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
     readings = []
 
@@ -1192,7 +1319,7 @@ def get_traffic_history(
             detail="Unable to read historical traffic data.",
         ) from exc
 
-    return readings
+    return {"items": readings[offset:offset + limit], "total": len(readings), "limit": limit, "offset": offset}
 
 
 # -----------------------------
@@ -1481,6 +1608,37 @@ def plan_routes(request: RoutePlanRequest):
         ) from exc
 
 
+@app.post("/api/v1/routes/eta")
+def route_eta(request: RoutePlanRequest):
+    """Return current provider ETA and explicit unavailable forecast horizons when no route model exists."""
+    result = plan_routes(request)
+    routes = result.get("routes") or []
+    current = None
+    if routes:
+        route = routes[0]
+        current = {
+            "seconds": route.get("travel_time_seconds"),
+            "distance_km": route.get("distance_km"),
+            "source": result.get("provider", "TomTom"),
+        }
+    generated_at = datetime.now(timezone.utc).isoformat()
+    forecast_state = {
+        "available": False,
+        "eta_seconds": None,
+        "data_quality": {"status": "insufficient_route_history", "source": "phase1_verified_store"},
+        "model_version": None,
+        "generated_at": generated_at,
+        "reason": "Route-level horizon ETA is unavailable until verified route segment forecasts are supported.",
+    }
+    return {
+        "current": current,
+        "horizons": {f"{h}m": dict(forecast_state) for h in (15, 30, 60)},
+        "best_time_to_leave": None,
+        "best_time_reason": "No measured route-level horizon ETA is available.",
+        "generated_at": generated_at,
+    }
+
+
 # -----------------------------
 # Safe Thread-Safe Dataset Caching with Invalidation
 # -----------------------------
@@ -1677,8 +1835,12 @@ def get_traffic_predictions(
 
     # Case: Zero history and no live data available
     if current_speed is None or free_flow_speed is None:
+        unavailable_generated_at = datetime.now(timezone.utc).isoformat()
         return {
             "forecast_available": False,
+            "data_quality": {"status": "no_data", "source": None},
+            "model_version": None,
+            "generated_at": unavailable_generated_at,
             "data_available": False,
             "model_status": "no_data",
             "message": "No live observation or recorded history found for this road segment.",
@@ -1753,6 +1915,13 @@ def get_traffic_predictions(
 
         return {
             "forecast_available": False,
+            "data_quality": {
+                "source": live_traffic_info.get("data_source"),
+                "status": "insufficient_history",
+                "verified_history": feature_history is not None,
+            },
+            "model_version": predictor.metadata.get("model_version") if predictor.metadata else None,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "data_available": True,
             "model_status": "insufficient_history",
             "message": f"Insufficient historical data for {resolved_area}. {readiness_note}",
@@ -1834,12 +2003,29 @@ def get_traffic_predictions(
         historical_sample_count=observation_count,
         feature_history=feature_history,
     )
+    generated_at_utc = datetime.now(timezone.utc).isoformat()
+    for outlook in outlooks.values():
+        if isinstance(outlook, dict):
+            outlook.setdefault("generated_at", generated_at_utc)
+            outlook.setdefault("model_version", pred_res.get("model_version"))
+            outlook.setdefault("data_quality", {
+                "source": live_traffic_info.get("data_source"),
+                "quality": "verified" if feature_history is not None else "unverified_or_live",
+                "verified_history": feature_history is not None,
+            })
 
     now = datetime.now().astimezone()
     future_time = now + timedelta(minutes=horizon_minutes)
 
     forecast_info = {
         "timestamp": future_time.isoformat(),
+        "generated_at": generated_at_utc,
+        "data_quality": {
+            "source": live_traffic_info.get("data_source"),
+            "quality": (str(loc_subset.iloc[-1].get("quality")) if loc_subset is not None and not loc_subset.empty and pd.notna(loc_subset.iloc[-1].get("quality")) else "unverified_or_live"),
+            "is_stale": is_stale,
+            "verified_history": feature_history is not None,
+        },
         "predicted_congestion_percent": pred_res.get("predicted_congestion_percent"),
         "predicted_speed_kmh": pred_res.get("predicted_speed_kmh"),
         "congestion_delta": pred_res.get("congestion_delta", 0.0),
@@ -1861,6 +2047,24 @@ def get_traffic_predictions(
         "is_stale": is_stale,
         "data_age_minutes": data_age_minutes,
     }
+    if horizon_forecast_available and feature_history is not None and loc_subset is not None and not loc_subset.empty:
+        try:
+            from services.phase1_pipeline import record_forecast
+            origin = pd.to_datetime(loc_subset.iloc[-1]["timestamp"], utc=True)
+            generated = datetime.now(timezone.utc)
+            record_forecast(
+                city=str(resolved_city), area=str(resolved_area), horizon_minutes=horizon_minutes,
+                origin_timestamp=origin.isoformat(),
+                target_timestamp=(origin + pd.Timedelta(minutes=horizon_minutes)).isoformat(),
+                generated_at=generated.isoformat(),
+                predicted_congestion_percent=float(pred_res["predicted_congestion_percent"]),
+                model_version=pred_res.get("model_version"),
+                data_source=str(live_traffic_info.get("data_source") or "phase1_verified_store"),
+                data_quality=str(forecast_info["data_quality"]["quality"]),
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger("trafficwatch.forecast").warning("Forecast history persistence failed: %s", type(exc).__name__)
 
     # Model metadata info
     horizon_metrics = {}
@@ -2135,6 +2339,7 @@ def get_prediction_data_status():
 
 
 @app.get("/api/model/status")
+@cached_read(10)
 def get_model_status():
     """
     Returns training evaluation metrics across 15m, 30m, and 60m horizons,
@@ -2156,12 +2361,55 @@ def get_model_status():
     }
 
 
+@app.get("/api/v1/model/metrics")
+@cached_read(10)
+def model_metrics():
+    status = get_model_status()
+    metadata = status.get("metadata") or {}
+    return {
+        "model_version": metadata.get("model_version"),
+        "status": metadata.get("status", "unavailable"),
+        "training_range": metadata.get("training_range"),
+        "evaluation_by_horizon": metadata.get("evaluation_by_horizon", {}),
+        "fallback_by_horizon": {
+            horizon: item.get("fallback_reason")
+            for horizon, item in metadata.get("evaluation_by_horizon", {}).items()
+            if item.get("fallback_reason")
+        },
+        "data_provenance_status": metadata.get("data_provenance_status", "unavailable"),
+        "drift": metadata.get("drift"),
+    }
+
+
+@app.get("/api/v1/alerts", response_model=AlertsResponse)
+@cached_read(5)
+def list_alerts(limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)):
+    """Return alerts derived only from current drift/collector health signals."""
+    alerts = []
+    generated_at = datetime.now(timezone.utc)
+    try:
+        from ml.train import get_drift_status
+        drift = get_drift_status()
+        if drift.get("alert"):
+            alerts.append({"id": "model-drift", "type": "model_drift", "severity": "warning",
+                           "message": drift.get("message", "Verified features drifted from the training reference."),
+                           "generated_at": generated_at})
+    except Exception:
+        pass
+    with _collection_health_lock:
+        collection = dict(_collection_health_status)
+    if collection.get("last_collection_status") in {"failed", "partial"}:
+        alerts.append({"id": "collector-health", "type": "collection_failure", "severity": "warning",
+                       "message": "The latest traffic collection run reported failures.", "generated_at": generated_at})
+    return {"items": alerts[offset:offset + limit], "total": len(alerts), "limit": limit, "offset": offset}
+
+
 # -----------------------------
 # Data Pipeline & Model Retraining Actions
 # -----------------------------
 
 @app.post("/api/traffic/collect")
-def trigger_traffic_collection():
+def trigger_traffic_collection(role: str = Depends(require_admin)):
     """
     Manually triggers an immediate traffic collection poll across monitored locations.
     Appends new observations to live_traffic.csv and cleaned_traffic.csv, automatically
@@ -2176,6 +2424,7 @@ def trigger_traffic_collection():
     before_count = len(before_df) if before_df is not None else 0
     collect_traffic_automatically()
     invalidate_traffic_cache()
+    invalidate_read_cache()
     after_df = get_traffic_dataset()
     after_count = len(after_df) if after_df is not None else 0
     new_records = max(0, after_count - before_count)
@@ -2190,7 +2439,7 @@ def trigger_traffic_collection():
 
 
 @app.post("/api/traffic/clean")
-def trigger_dataset_cleaning():
+def trigger_dataset_cleaning(role: str = Depends(require_admin)):
     """
     Manually triggers an idempotent cleaning and deduplication pass on raw live_traffic.csv
     into cleaned_traffic.csv. Safely clears in-memory caches.
@@ -2200,6 +2449,7 @@ def trigger_dataset_cleaning():
         raise HTTPException(status_code=404, detail="Raw dataset live_traffic.csv not found.")
     summary = clean_historical_dataset()
     invalidate_traffic_cache()
+    invalidate_read_cache()
     return {
         "success": True,
         "message": "Dataset cleaned and deduplicated successfully.",
@@ -2208,7 +2458,7 @@ def trigger_dataset_cleaning():
 
 
 @app.post("/api/model/retrain")
-def trigger_model_retraining():
+def trigger_model_retraining(role: str = Depends(require_admin)):
     """
     Triggers deliberate model training and multi-horizon validation pipeline.
     Re-evaluates candidate models, updates saved artifacts, reloads predictor, and returns metadata.
@@ -2219,6 +2469,7 @@ def trigger_model_retraining():
     if metadata.get("status") == "blocked":
         return {"success": False, "message": metadata.get("reason"), "metadata": metadata}
     get_predictor(force_reload=True)
+    invalidate_read_cache()
     return {
         "success": True,
         "message": "Model retraining and evaluation completed.",
@@ -2227,7 +2478,7 @@ def trigger_model_retraining():
 
 
 @app.post("/api/model/rollback")
-def rollback_model(version: Optional[str] = Query(default=None)):
+def rollback_model(version: Optional[str] = Query(default=None), role: str = Depends(require_admin)):
     """Activate a previously registered model version; omitted version selects the previous active one."""
     from ml.train import rollback_model_version
     try:
@@ -2235,6 +2486,7 @@ def rollback_model(version: Optional[str] = Query(default=None)):
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     get_predictor(force_reload=True)
+    invalidate_read_cache()
     return {"success": True, "message": "Model version rolled back.", "metadata": metadata}
 
 
