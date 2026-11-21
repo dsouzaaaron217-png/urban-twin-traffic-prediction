@@ -110,15 +110,19 @@ def test_4_and_5_immediate_prediction_input_reflection_and_reactivity(client):
     res_before = client.get("/api/traffic/predictions?city=Pune&area=Hinjawadi&horizon_minutes=15")
     assert res_before.status_code == 200
     data_before = res_before.json()
-    assert data_before["forecast_available"] is True
+    # The legacy CSV is not automatically trusted as Phase 1 provenance. Until
+    # this corridor has 14 days at >=80% coverage in the Phase 1 store, forecasts
+    # must remain locked even when the older sample-count threshold is met.
+    assert data_before["forecast_available"] is False
+    assert data_before["data_status"]["has_sufficient_history"] is False
+    assert data_before["data_status"]["readiness_message"].startswith("Collecting data:")
 
     # Check that live_traffic exists
     live_before = data_before["live_traffic"]
     assert live_before is not None
 
-    # The prediction output reflects the latest observed congestion
-    pred_cong_before = data_before["forecast"]["predicted_congestion_percent"]
-    assert pred_cong_before is not None
+    # The latest observation remains visible even while the forecast is gated.
+    assert live_before["current_speed_kmh"] is not None
 
     # Verify that predictor dynamically adapts to varying input speeds and congestions
     predictor = get_predictor()

@@ -22,6 +22,14 @@ from pydantic import BaseModel, Field
 
 from services.routing_service import calculate_routes_tomtom, _fetch_tomtom_flow
 from services.tomtom_quota import tomtom_get
+from services.phase1_pipeline import (
+    readiness as get_phase1_readiness,
+    record_observation as record_phase1_observation,
+    start_run as start_ingestion_run,
+    finish_run as finish_ingestion_run,
+    TomTomSource,
+    recover_interrupted_runs,
+)
 from ml.predict import get_predictor
 from services.data_pipeline import (
     process_new_reading,
@@ -200,15 +208,21 @@ def collect_traffic_automatically():
         print("Traffic collection skipped: TomTom API key is missing.")
         return
 
-    locations = load_monitored_locations()
+    monitored_locations = load_monitored_locations()
+    locations = [
+        location
+        for location in monitored_locations
+        if isinstance(location, dict)
+        and str(location.get("city", "")).strip().casefold() == "mangaluru"
+    ]
     with _collection_health_lock:
         _collection_health_status["monitored_locations_count"] = len(locations)
 
     if not locations:
         with _collection_health_lock:
             _collection_health_status["last_collection_status"] = "skipped"
-            _collection_health_status["last_collection_message"] = "No monitored locations saved"
-        print("Traffic collection skipped: No monitored locations saved.")
+            _collection_health_status["last_collection_message"] = "No monitored Mangaluru locations saved"
+        print("Traffic collection skipped: No monitored Mangaluru locations saved.")
         return
 
     url = (
@@ -218,24 +232,18 @@ def collect_traffic_automatically():
 
     success_count = 0
     fail_count = 0
+    run_id = start_ingestion_run("tomtom")
 
     for location in locations:
         latitude = location["latitude"]
         longitude = location["longitude"]
 
         try:
-            response = tomtom_get("traffic_flow", 
-                url,
-                params={
-                    "point": f"{latitude},{longitude}",
-                    "key": TOMTOM_API_KEY,
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            flow = data.get("flowSegmentData", {})
+            flow = TomTomSource(
+                TOMTOM_API_KEY,
+                tomtom_get,
+                int(os.getenv("TOMTOM_DAILY_REQUEST_BUDGET", "500")),
+            ).fetch(latitude, longitude)
             current_speed = flow.get("currentSpeed")
             free_flow_speed = flow.get("freeFlowSpeed")
 
@@ -278,13 +286,14 @@ def collect_traffic_automatically():
             }
 
             save_traffic_reading(reading)
+            record_phase1_observation(reading, "tomtom", run_id)
             success_count += 1
             print(
                 f"Traffic reading saved for {reading['area']} "
                 f"at {reading['timestamp']}"
             )
 
-        except (requests.RequestException, ValueError, KeyError) as error:
+        except (requests.RequestException, ValueError, KeyError, RuntimeError) as error:
             fail_count += 1
             print(
                 f"Traffic collection failed for "
@@ -292,6 +301,7 @@ def collect_traffic_automatically():
             )
 
     finish_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    finish_ingestion_run(run_id, "complete" if fail_count == 0 else "partial" if success_count else "failed")
     with _collection_health_lock:
         _collection_health_status["successful_reads_last_run"] = success_count
         _collection_health_status["failed_reads_last_run"] = fail_count
@@ -314,6 +324,9 @@ def collect_traffic_automatically():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    recovered_runs = recover_interrupted_runs()
+    if recovered_runs:
+        print(f"Recovered {recovered_runs} interrupted ingestion run(s).")
     if ENABLE_TOMTOM_SCHEDULER and TOMTOM_API_KEY:
         print("TomTom automatic collection: ENABLED")
 
@@ -602,6 +615,11 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/api/v1/data/readiness")
+def get_data_readiness():
+    return get_phase1_readiness()
 
 
 
@@ -1569,7 +1587,11 @@ def get_traffic_predictions(
             resolved_lon = float(r0["longitude"])
 
     observation_count = len(loc_subset) if loc_subset is not None else 0
-    has_sufficient_history = observation_count >= 15
+    corridor_readiness = next((item for item in get_phase1_readiness()["corridors"]
+                               if item["city"].casefold() == str(resolved_city or "").casefold()
+                               and item["area"].casefold() == str(resolved_area or "").casefold()), None)
+    phase1_ready = bool(corridor_readiness and corridor_readiness["ready"])
+    has_sufficient_history = observation_count >= 15 and phase1_ready
 
     # Prioritize latest observation from the validated historical dataset
     current_speed = None
@@ -1673,12 +1695,8 @@ def get_traffic_predictions(
             is_monitored = True
             break
 
-    estimated_readiness_min = max(0, 15 - observation_count) * 5 if is_monitored else None
-    readiness_note = (
-        f"~{estimated_readiness_min} minutes via background polling (5-minute intervals)"
-        if is_monitored
-        else "Unmonitored corridor: add to Monitored Locations to accumulate automated 5-minute readings"
-    )
+    estimated_readiness_min = None
+    readiness_note = (corridor_readiness or {}).get("message", "Collecting data: 0 of 14 days")
 
     # Case: Incomplete history (< 15 readings)
     if not has_sufficient_history:
@@ -1696,13 +1714,9 @@ def get_traffic_predictions(
             "forecast_available": False,
             "data_available": True,
             "model_status": "insufficient_history",
-            "message": (
-                f"Insufficient historical data for {resolved_area} "
-                f"({observation_count} readings available, 15 required)."
-            ),
+            "message": f"Insufficient historical data for {resolved_area}. {readiness_note}",
             "explanation": (
-                "Forecasting models require at least 15 verified historical observations on this segment "
-                "to generate reliable traffic forecasts. Live traffic conditions are reported directly."
+                "Forecasts require at least 14 days of corridor history with 80% polling coverage. Live traffic conditions are reported directly."
             ),
             "location": location_info,
             "live_traffic": live_traffic_info,
@@ -1713,11 +1727,18 @@ def get_traffic_predictions(
                 "total_observations": observation_count,
                 "has_sufficient_history": False,
                 "required_observations": 15,
+                "history_days": (corridor_readiness or {}).get("history_days", 0),
+                "coverage": (corridor_readiness or {}).get("coverage", 0),
+                "readiness_message": readiness_note,
+                "is_stale": is_stale,
+                "data_age_minutes": data_age_minutes,
+                "freshness": freshness_status,
                 "is_monitored": is_monitored,
                 "estimated_readiness_minutes": estimated_readiness_min,
                 "readiness_note": readiness_note,
             },
             "predictions": [],
+            "model_name": (predictor.metadata or {}).get("model_name", "Unavailable"),
         }
 
     # Sufficient history: produce multi-horizon ML predictions

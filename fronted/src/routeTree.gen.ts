@@ -18,6 +18,7 @@ import { Route as LiveTrafficRouteImport } from './routes/live-traffic'
 import { Route as LocationsRouteImport } from './routes/locations'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as PredictionsRouteImport } from './routes/predictions'
+import { Route as ReadinessRouteImport } from './routes/readiness'
 import { Route as RoutePlannerRouteImport } from './routes/route-planner'
 
 const IndexRoute = IndexRouteImport.update({
@@ -65,6 +66,11 @@ const PredictionsRoute = PredictionsRouteImport.update({
   path: '/predictions',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReadinessRoute = ReadinessRouteImport.update({
+  id: '/readiness',
+  path: '/readiness',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RoutePlannerRoute = RoutePlannerRouteImport.update({
   id: '/route-planner',
   path: '/route-planner',
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/locations': typeof LocationsRoute
   '/overview': typeof OverviewRoute
   '/predictions': typeof PredictionsRoute
+  '/readiness': typeof ReadinessRoute
   '/route-planner': typeof RoutePlannerRoute
 }
 export interface FileRoutesByTo {
@@ -93,6 +100,7 @@ export interface FileRoutesByTo {
   '/locations': typeof LocationsRoute
   '/overview': typeof OverviewRoute
   '/predictions': typeof PredictionsRoute
+  '/readiness': typeof ReadinessRoute
   '/route-planner': typeof RoutePlannerRoute
 }
 export interface FileRoutesById {
@@ -106,6 +114,7 @@ export interface FileRoutesById {
   '/locations': typeof LocationsRoute
   '/overview': typeof OverviewRoute
   '/predictions': typeof PredictionsRoute
+  '/readiness': typeof ReadinessRoute
   '/route-planner': typeof RoutePlannerRoute
 }
 export interface FileRouteTypes {
@@ -120,6 +129,7 @@ export interface FileRouteTypes {
     | '/locations'
     | '/overview'
     | '/predictions'
+    | '/readiness'
     | '/route-planner'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -132,6 +142,7 @@ export interface FileRouteTypes {
     | '/locations'
     | '/overview'
     | '/predictions'
+    | '/readiness'
     | '/route-planner'
   id:
     | '__root__'
@@ -144,6 +155,7 @@ export interface FileRouteTypes {
     | '/locations'
     | '/overview'
     | '/predictions'
+    | '/readiness'
     | '/route-planner'
   fileRoutesById: FileRoutesById
 }
@@ -157,6 +169,7 @@ export interface RootRouteChildren {
   LocationsRoute: typeof LocationsRoute
   OverviewRoute: typeof OverviewRoute
   PredictionsRoute: typeof PredictionsRoute
+  ReadinessRoute: typeof ReadinessRoute
   RoutePlannerRoute: typeof RoutePlannerRoute
 }
 
@@ -225,6 +238,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PredictionsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/readiness': {
+      id: '/readiness'
+      path: '/readiness'
+      fullPath: '/readiness'
+      preLoaderRoute: typeof ReadinessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/route-planner': {
       id: '/route-planner'
       path: '/route-planner'
@@ -245,6 +265,7 @@ const rootRouteChildren: RootRouteChildren = {
   LocationsRoute: LocationsRoute,
   OverviewRoute: OverviewRoute,
   PredictionsRoute: PredictionsRoute,
+  ReadinessRoute: ReadinessRoute,
   RoutePlannerRoute: RoutePlannerRoute,
 }
 export const routeTree = rootRouteImport

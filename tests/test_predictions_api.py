@@ -157,3 +157,23 @@ def test_zero_history_unmonitored_location_never_substitutes(client):
     # Forecast must be unavailable
     assert data["forecast_available"] is False
     assert data["predictions"] == []
+
+
+def test_phase1_readiness_endpoint_returns_corridor_contract(client, monkeypatch):
+    import main
+
+    expected = {
+        "poll_interval_minutes": 15,
+        "horizons_minutes": [15, 30, 60],
+        "minimum_history_days": 14,
+        "minimum_coverage": 0.8,
+        "corridors": [{"city": "Mangaluru", "area": "Hampankatta", "coverage": 0.5,
+                       "first_timestamp": "2026-11-01T00:00:00+00:00",
+                       "last_timestamp": "2026-11-02T00:00:00+00:00",
+                       "history_days": 2, "observations": 49, "ready": False,
+                       "message": "Collecting data: 2 of 14 days"}],
+    }
+    monkeypatch.setattr(main, "get_phase1_readiness", lambda: expected)
+    response = client.get("/api/v1/data/readiness")
+    assert response.status_code == 200
+    assert response.json() == expected

@@ -69,6 +69,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
           <div className="nav-divider" />
+          <a href="/readiness" onClick={() => setOpen(false)} className={`nav-link ${pathname === '/readiness' ? 'active' : ''}`}>
+            <Activity />
+            <span>Forecast Readiness</span>
+          </a>
           <Link
             to="/about"
             onClick={() => setOpen(false)}

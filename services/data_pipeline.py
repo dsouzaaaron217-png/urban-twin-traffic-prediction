@@ -53,6 +53,8 @@ def normalize_city_name(city: Optional[str], lat: Optional[float] = None, lon: O
     if city and isinstance(city, str):
         cleaned = city.strip()
         lower = cleaned.lower()
+        if "mangaluru" in lower or "mangalore" in lower:
+            return "Mangaluru"
         if "pune" in lower:
             return "Pune"
         if "mumbai" in lower:
